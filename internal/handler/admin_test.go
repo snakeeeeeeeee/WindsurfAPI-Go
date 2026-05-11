@@ -628,6 +628,49 @@ func TestDashboardModelAccessCompatibilityAPIs(t *testing.T) {
 	}
 }
 
+func TestDashboardModelsDefaultToPublicCatalog(t *testing.T) {
+	sqliteStore, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "windsurf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+	handler := DashboardAPIHandler(account.NewManager(sqliteStore), modelaccess.NewManager(sqliteStore), nil, nil, reusepool.NewPool(), nil)
+
+	publicRec := httptest.NewRecorder()
+	handler.ServeHTTP(publicRec, httptest.NewRequest(http.MethodGet, "/dashboard/api/models", nil))
+	if publicRec.Code != http.StatusOK {
+		t.Fatalf("public status=%d body=%s", publicRec.Code, publicRec.Body.String())
+	}
+	var publicBody struct {
+		Scope string                  `json:"scope"`
+		Data  []models.DashboardModel `json:"data"`
+	}
+	if err := json.Unmarshal(publicRec.Body.Bytes(), &publicBody); err != nil {
+		t.Fatal(err)
+	}
+	if publicBody.Scope != "public" || len(publicBody.Data) != len(models.PublicModelIDs) {
+		t.Fatalf("public scope=%q len=%d body=%s", publicBody.Scope, len(publicBody.Data), publicRec.Body.String())
+	}
+	for _, item := range publicBody.Data {
+		if strings.Contains(item.ID, "-medium") || strings.Contains(item.ID, "-xhigh") || strings.Contains(item.ID, "-max") {
+			t.Fatalf("public catalog leaked internal variant: %#v", item)
+		}
+	}
+
+	allRec := httptest.NewRecorder()
+	handler.ServeHTTP(allRec, httptest.NewRequest(http.MethodGet, "/dashboard/api/models?scope=all", nil))
+	var allBody struct {
+		Scope string                  `json:"scope"`
+		Data  []models.DashboardModel `json:"data"`
+	}
+	if err := json.Unmarshal(allRec.Body.Bytes(), &allBody); err != nil {
+		t.Fatal(err)
+	}
+	if allBody.Scope != "all" || len(allBody.Data) <= len(publicBody.Data) {
+		t.Fatalf("all scope=%q len=%d public=%d", allBody.Scope, len(allBody.Data), len(publicBody.Data))
+	}
+}
+
 func TestDashboardNodeProxyAndStatusCompatibilityAPIs(t *testing.T) {
 	cfg := &config.Config{
 		Server:    config.ServerConfig{Port: 3456, APIKeys: []string{"sk-old"}, MaxRequestBodyBytes: 26214400},

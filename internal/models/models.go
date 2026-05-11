@@ -1,7 +1,10 @@
 package models
 
-import "strings"
-import "sync"
+import (
+	"os"
+	"strings"
+	"sync"
+)
 
 // Model 表示一个支持的模型
 type Model struct {
@@ -66,6 +69,15 @@ type TierAccess struct {
 	Unsupported     []string `json:"unsupported"`
 }
 
+var PublicModelIDs = []string{
+	"claude-opus-4-7",
+	"claude-opus-4-6",
+	"claude-opus-4-6-thinking",
+	"claude-sonnet-4-6",
+	"claude-haiku-4-5",
+	"claude-haiku-4-5-20251001",
+}
+
 // SupportedModels is intentionally Claude-only for the first Go milestone.
 // Keeping the catalog small removes cross-provider routing/fallback variables
 // while the Cascade protocol is still being nailed down.
@@ -113,6 +125,12 @@ var SupportedModels = []Model{
 		ModelUID: "claude-opus-4-7-medium",
 	},
 	{
+		ID: "claude-opus-4-7-low", Object: "model", Created: 1706745938,
+		OwnedBy: "windsurf", CascadeName: "claude-opus-4-7-low",
+		Family: "claude", DisplayName: "Claude Opus 4.7 Low",
+		ModelUID: "claude-opus-4-7-low",
+	},
+	{
 		ID: "claude-opus-4-7-high", Object: "model", Created: 1706745938,
 		OwnedBy: "windsurf", CascadeName: "claude-opus-4-7-high",
 		Family: "claude", DisplayName: "Claude Opus 4.7 High",
@@ -129,6 +147,24 @@ var SupportedModels = []Model{
 		OwnedBy: "windsurf", CascadeName: "claude-opus-4-7-max",
 		Family: "claude", DisplayName: "Claude Opus 4.7 Max",
 		ModelUID: "claude-opus-4-7-max",
+	},
+	{
+		ID: "claude-opus-4-7-medium-thinking", Object: "model", Created: 1706745938,
+		OwnedBy: "windsurf", CascadeName: "claude-opus-4-7-medium-thinking",
+		Family: "claude", DisplayName: "Claude Opus 4.7 Medium Thinking",
+		ModelUID: "claude-opus-4-7-medium-thinking",
+	},
+	{
+		ID: "claude-opus-4-7-high-thinking", Object: "model", Created: 1706745938,
+		OwnedBy: "windsurf", CascadeName: "claude-opus-4-7-high-thinking",
+		Family: "claude", DisplayName: "Claude Opus 4.7 High Thinking",
+		ModelUID: "claude-opus-4-7-high-thinking",
+	},
+	{
+		ID: "claude-opus-4-7-xhigh-thinking", Object: "model", Created: 1706745938,
+		OwnedBy: "windsurf", CascadeName: "claude-opus-4-7-xhigh-thinking",
+		Family: "claude", DisplayName: "Claude Opus 4.7 XHigh Thinking",
+		ModelUID: "claude-opus-4-7-xhigh-thinking",
 	},
 }
 
@@ -186,6 +222,114 @@ func NormalizeModelID(id string) string {
 	return key
 }
 
+// ResolveModelForRequest normalizes public model aliases and applies a
+// separate reasoning effort knob to Windsurf's per-effort model IDs.
+func ResolveModelForRequest(id, effort string) *Model {
+	id = ResolveModelIDForRequest(id, effort)
+	if id == "" {
+		return nil
+	}
+	return GetModelByID(id)
+}
+
+func ResolveModelIDForRequest(id, effort string) string {
+	canonical := NormalizeModelID(id)
+	if canonical == "" {
+		return ""
+	}
+	effort = NormalizeReasoningEffort(effort)
+	if effort == "" {
+		return canonical
+	}
+	if routed := resolveOpus47EffortVariant(canonical, effort); routed != "" {
+		return routed
+	}
+	if IsReasoningEffortEnabled(effort) && !strings.Contains(canonical, "thinking") {
+		if sibling := GetModelByID(canonical + "-thinking"); sibling != nil {
+			return sibling.ID
+		}
+	}
+	return canonical
+}
+
+func NormalizeReasoningEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "off", "disabled", "false":
+		return ""
+	case "minimal":
+		return "low"
+	case "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(effort))
+	default:
+		return ""
+	}
+}
+
+func IsReasoningEffortEnabled(effort string) bool {
+	return NormalizeReasoningEffort(effort) != ""
+}
+
+// PickRateLimitFallback returns a same-provider lower-cost model sibling for
+// rate-limit remediation. It mirrors the Node catalog helper and only reads
+// literal catalog suffixes, so it never falls across providers.
+func PickRateLimitFallback(modelID string) string {
+	modelID = NormalizeModelID(modelID)
+	if modelID == "" {
+		return ""
+	}
+	effort := []string{"low", "medium", "high", "xhigh", "max"}
+	for i := len(effort) - 1; i >= 1; i-- {
+		suffix := "-" + effort[i]
+		if !strings.HasSuffix(modelID, suffix) {
+			continue
+		}
+		base := strings.TrimSuffix(modelID, suffix)
+		for j := i - 1; j >= 0; j-- {
+			candidate := base + "-" + effort[j]
+			if sameProviderFallback(modelID, candidate) {
+				return candidate
+			}
+		}
+	}
+	if strings.HasSuffix(modelID, "-1m") {
+		candidate := strings.TrimSuffix(modelID, "-1m")
+		if sameProviderFallback(modelID, candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func resolveOpus47EffortVariant(canonical, effort string) string {
+	if !strings.HasPrefix(canonical, "claude-opus-4-7-") {
+		return ""
+	}
+	thinking := strings.HasSuffix(canonical, "-thinking")
+	base := strings.TrimSuffix(canonical, "-thinking")
+	found := false
+	for _, tier := range []string{"low", "medium", "high", "xhigh", "max"} {
+		if base == "claude-opus-4-7-"+tier {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ""
+	}
+	targetEffort := effort
+	if thinking && targetEffort == "max" {
+		targetEffort = "xhigh"
+	}
+	target := "claude-opus-4-7-" + targetEffort
+	if thinking {
+		target += "-thinking"
+	}
+	if model := GetModelByID(target); model != nil {
+		return model.ID
+	}
+	return ""
+}
+
 // AllModels returns the full Node-parity catalog, including models that are
 // visible in Dashboard but not yet enabled on the Direct-only runtime path.
 func AllModels() []Model {
@@ -201,17 +345,17 @@ func ToOpenAIModelList() OpenAIModelList {
 }
 
 func ToOpenAIModelListFiltered(include func(Model) bool) OpenAIModelList {
-	models := AllModels()
-	data := make([]OpenAIModel, 0, len(models))
-	for _, m := range models {
-		if !m.DirectSupported || m.Deprecated {
+	data := make([]OpenAIModel, 0, len(PublicModelIDs))
+	for _, publicID := range PublicModelIDs {
+		m := ResolveModelForRequest(publicID, "")
+		if m == nil || !m.DirectSupported || m.Deprecated {
 			continue
 		}
-		if include != nil && !include(m) {
+		if include != nil && !include(*m) {
 			continue
 		}
 		data = append(data, OpenAIModel{
-			ID:      m.ID,
+			ID:      publicID,
 			Object:  m.Object,
 			Created: m.Created,
 			OwnedBy: m.OwnedBy,
@@ -225,6 +369,24 @@ func ToOpenAIModelListFiltered(include func(Model) bool) OpenAIModelList {
 
 func ToDashboardModelList() []DashboardModel {
 	return ToDashboardModelListWithAccess(nil)
+}
+
+func ToPublicDashboardModelList() []DashboardModel {
+	return ToPublicDashboardModelListWithAccess(nil)
+}
+
+func ToPublicDashboardModelListWithAccess(access map[string]DashboardAccess) []DashboardModel {
+	all := dashboardModelListForIDs(PublicModelIDs, access, true)
+	deduped := make([]DashboardModel, 0, len(all))
+	seen := map[string]bool{}
+	for _, m := range all {
+		if seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
+		deduped = append(deduped, m)
+	}
+	return deduped
 }
 
 func TierAccessSnapshot() TierAccess {
@@ -264,9 +426,29 @@ type DashboardAccess struct {
 }
 
 func ToDashboardModelListWithAccess(access map[string]DashboardAccess) []DashboardModel {
-	models := AllModels()
-	data := make([]DashboardModel, len(models))
-	for i, m := range models {
+	return dashboardModelListForIDs(nil, access, false)
+}
+
+func dashboardModelListForIDs(ids []string, access map[string]DashboardAccess, publicIDs bool) []DashboardModel {
+	var source []Model
+	if publicIDs {
+		source = make([]Model, 0, len(ids))
+		for _, id := range ids {
+			m := ResolveModelForRequest(id, "")
+			if m == nil {
+				continue
+			}
+			cp := *m
+			cp.ID = id
+			cp.DisplayName = id
+			cp.CascadeName = id
+			source = append(source, cp)
+		}
+	} else {
+		source = AllModels()
+	}
+	data := make([]DashboardModel, len(source))
+	for i, m := range source {
 		provider := m.Family
 		if provider == "" {
 			provider = "windsurf"
@@ -401,5 +583,69 @@ func buildModelLookup(models []Model) map[string]int {
 			add(alias, idx)
 		}
 	}
+	for alias, target := range publicModelAliases() {
+		if idx, ok := lookup[strings.ToLower(target)]; ok {
+			add(alias, idx)
+		}
+	}
 	return lookup
+}
+
+func sameProviderFallback(originalID, candidateID string) bool {
+	original := GetModelByID(originalID)
+	candidate := GetModelByID(candidateID)
+	if original == nil || candidate == nil {
+		return false
+	}
+	originalProvider := fallbackProviderKey(*original)
+	candidateProvider := fallbackProviderKey(*candidate)
+	if originalProvider == "" || candidateProvider == "" {
+		return true
+	}
+	return originalProvider == candidateProvider
+}
+
+func fallbackProviderKey(m Model) string {
+	key := strings.ToLower(strings.TrimSpace(m.Family))
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(m.OwnedBy))
+	}
+	switch key {
+	case "claude":
+		return "anthropic"
+	case "windsurf":
+		if strings.HasPrefix(strings.ToLower(m.ID), "claude-") {
+			return "anthropic"
+		}
+	}
+	return key
+}
+
+func publicModelAliases() map[string]string {
+	raw := strings.TrimSpace(os.Getenv("WINDSURFAPI_PUBLIC_MODEL_ALIASES"))
+	if raw == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		sep := "="
+		if strings.Contains(part, "=>") {
+			sep = "=>"
+		}
+		pieces := strings.SplitN(part, sep, 2)
+		if len(pieces) != 2 {
+			continue
+		}
+		alias := strings.TrimSpace(pieces[0])
+		target := strings.TrimSpace(strings.ToLower(pieces[1]))
+		if alias == "" || target == "" {
+			continue
+		}
+		out[alias] = target
+	}
+	return out
 }

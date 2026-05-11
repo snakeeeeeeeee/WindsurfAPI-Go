@@ -103,7 +103,7 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 			return
 		}
 		cachePolicy := anthropicCachePolicyFromRequest(req)
-		model := models.GetModelByID(req.Model)
+		model := models.ResolveModelForRequest(req.Model, anthropicReasoningEffort(req))
 		if model == nil {
 			writeAnthropicError(w, http.StatusBadRequest, "unknown model: "+req.Model)
 			return
@@ -704,6 +704,31 @@ func mergeAnthropicOutputConfigEffort(cfg anthropicThinkingConfig, outputConfig 
 	default:
 		return anthropicThinkingConfig{Enabled: true}
 	}
+}
+
+func anthropicReasoningEffort(req MessagesRequest) string {
+	if m, ok := req.OutputConfig.(map[string]any); ok && m != nil {
+		if effort := strings.ToLower(strings.TrimSpace(stringValue(m["effort"]))); effort != "" {
+			return effort
+		}
+	}
+	switch v := req.Thinking.(type) {
+	case bool:
+		if v {
+			return "medium"
+		}
+	case string:
+		typ := strings.ToLower(strings.TrimSpace(v))
+		if typ != "" && typ != "disabled" && typ != "false" && typ != "off" {
+			return "medium"
+		}
+	case map[string]any:
+		typ := strings.ToLower(strings.TrimSpace(stringValue(v["type"])))
+		if typ != "" && typ != "disabled" {
+			return "medium"
+		}
+	}
+	return ""
 }
 
 func anthropicIntValue(v any, fallback int) int {

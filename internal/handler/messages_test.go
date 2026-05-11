@@ -297,6 +297,42 @@ func TestAnthropicServerSideToolsAreDroppedAndChoicePruned(t *testing.T) {
 	}
 }
 
+func TestMessagesHandlerRoutesOutputConfigEffortModel(t *testing.T) {
+	am := testMessagesAccountManager(t)
+	_, _ = am.AddAccount("first@example.com", "tok-a", "u1", "", "")
+	fake := &fakeMessagesDirectClient{}
+	handler := MessagesHandler(am, fake, nil, nil)
+	body := `{"model":"claude-opus-4-7","max_tokens":128,"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Model.ID != "claude-opus-4-7-high" {
+		t.Fatalf("routed model calls=%+v", fake.calls)
+	}
+}
+
+func TestMessagesHandlerRoutesThinkingModel(t *testing.T) {
+	am := testMessagesAccountManager(t)
+	_, _ = am.AddAccount("first@example.com", "tok-a", "u1", "", "")
+	fake := &fakeMessagesDirectClient{}
+	handler := MessagesHandler(am, fake, nil, nil)
+	body := `{"model":"claude-sonnet-4-6","max_tokens":128,"thinking":{"type":"enabled"},"messages":[{"role":"user","content":"hi"}]}`
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Model.ID != "claude-sonnet-4.6-thinking" {
+		t.Fatalf("routed model calls=%+v", fake.calls)
+	}
+}
+
 func TestAnthropicToolChoiceAlias(t *testing.T) {
 	choice, err := anthropicToolChoiceToDirect(map[string]any{"type": "tool", "name": "echo_text"})
 	if err != nil {

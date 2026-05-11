@@ -1,6 +1,9 @@
 package models
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestGetModelByIDClaudeAliases(t *testing.T) {
 	tests := []struct {
@@ -12,6 +15,9 @@ func TestGetModelByIDClaudeAliases(t *testing.T) {
 		{"claude-haiku-4.5", "claude-4.5-haiku", "MODEL_PRIVATE_11"},
 		{"claude-sonnet-4.5", "claude-4.5-sonnet", "MODEL_PRIVATE_2"},
 		{"claude-opus-4.7", "claude-opus-4-7-medium", "claude-opus-4-7-medium"},
+		{"opus-4.6", "claude-opus-4.6", "claude-opus-4-6"},
+		{"opus-4.7-thinking", "claude-opus-4-7-medium-thinking", "claude-opus-4-7-medium-thinking"},
+		{"claude-opus-4.7-low", "claude-opus-4-7-low", "claude-opus-4-7-low"},
 		{"claude-opus-4.7-high", "claude-opus-4-7-high", "claude-opus-4-7-high"},
 		{"claude-4.6", "claude-sonnet-4.6", "claude-sonnet-4-6"},
 	}
@@ -32,6 +38,58 @@ func TestGetModelByIDClaudeAliases(t *testing.T) {
 	}
 }
 
+func TestModelFallbackAndPublicAliasCompatibility(t *testing.T) {
+	if got := PickRateLimitFallback("claude-opus-4.7-max"); got != "claude-opus-4-7-xhigh" {
+		t.Fatalf("fallback max=%q", got)
+	}
+	if got := PickRateLimitFallback("claude-opus-4.7-high"); got != "claude-opus-4-7-medium" {
+		t.Fatalf("fallback high=%q", got)
+	}
+	if got := PickRateLimitFallback("claude-sonnet-4.6-1m"); got != "claude-sonnet-4.6" {
+		t.Fatalf("fallback 1m=%q", got)
+	}
+	if got := PickRateLimitFallback("claude-opus-4.6-thinking"); got != "" {
+		t.Fatalf("thinking fallback should be empty, got %q", got)
+	}
+}
+
+func TestResolveModelForRequestPublicNamesAndEffort(t *testing.T) {
+	tests := []struct {
+		name   string
+		model  string
+		effort string
+		want   string
+		uid    string
+	}{
+		{"opus47Default", "claude-opus-4-7", "", "claude-opus-4-7-medium", "claude-opus-4-7-medium"},
+		{"opus47Low", "claude-opus-4-7", "low", "claude-opus-4-7-low", "claude-opus-4-7-low"},
+		{"opus47XHigh", "claude-opus-4-7", "xhigh", "claude-opus-4-7-xhigh", "claude-opus-4-7-xhigh"},
+		{"opus47Max", "claude-opus-4-7", "max", "claude-opus-4-7-max", "claude-opus-4-7-max"},
+		{"opus47ThinkingDefault", "claude-opus-4-7-thinking", "", "claude-opus-4-7-medium-thinking", "claude-opus-4-7-medium-thinking"},
+		{"opus47ThinkingHigh", "claude-opus-4-7-thinking", "high", "claude-opus-4-7-high-thinking", "claude-opus-4-7-high-thinking"},
+		{"opus47ThinkingMaxFallsToXHigh", "claude-opus-4-7-thinking", "max", "claude-opus-4-7-xhigh-thinking", "claude-opus-4-7-xhigh-thinking"},
+		{"opus46", "claude-opus-4-6", "", "claude-opus-4.6", "claude-opus-4-6"},
+		{"opus46Thinking", "claude-opus-4-6-thinking", "", "claude-opus-4.6-thinking", "claude-opus-4-6-thinking"},
+		{"opus46EffortThinking", "claude-opus-4-6", "high", "claude-opus-4.6-thinking", "claude-opus-4-6-thinking"},
+		{"sonnet46", "claude-sonnet-4-6", "", "claude-sonnet-4.6", "claude-sonnet-4-6"},
+		{"sonnet46EffortThinking", "claude-sonnet-4-6", "medium", "claude-sonnet-4.6-thinking", "claude-sonnet-4-6-thinking"},
+		{"haiku45", "claude-haiku-4-5", "", "claude-4.5-haiku", "MODEL_PRIVATE_11"},
+		{"haiku45Dated", "claude-haiku-4-5-20251001", "", "claude-4.5-haiku", "MODEL_PRIVATE_11"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveModelForRequest(tt.model, tt.effort)
+			if got == nil {
+				t.Fatalf("ResolveModelForRequest(%q, %q) returned nil", tt.model, tt.effort)
+			}
+			if got.ID != tt.want || got.ModelUID != tt.uid {
+				t.Fatalf("resolved ID=%q uid=%q, want ID=%q uid=%q", got.ID, got.ModelUID, tt.want, tt.uid)
+			}
+		})
+	}
+}
+
 func TestCatalogContainsNodeModelsButOpenAIListIsDirectOnly(t *testing.T) {
 	for _, m := range AllModels() {
 		if m.ModelUID == "" && m.ModelEnum == 0 {
@@ -44,11 +102,15 @@ func TestCatalogContainsNodeModelsButOpenAIListIsDirectOnly(t *testing.T) {
 	}
 
 	list := ToOpenAIModelList()
-	if len(list.Data) != len(SupportedModels) {
-		t.Fatalf("direct model list length = %d, want %d", len(list.Data), len(SupportedModels))
+	if len(list.Data) != len(PublicModelIDs) {
+		t.Fatalf("public model list length = %d, want %d", len(list.Data), len(PublicModelIDs))
+	}
+	wantPublic := map[string]bool{}
+	for _, id := range PublicModelIDs {
+		wantPublic[id] = true
 	}
 	for _, m := range list.Data {
-		if m.ID == "gpt-5" || m.OwnedBy != "windsurf" {
+		if !wantPublic[m.ID] || strings.Contains(m.ID, "-medium") || strings.Contains(m.ID, "-xhigh") || strings.Contains(m.ID, "-max") {
 			t.Fatalf("unexpected model in OpenAI list: %#v", m)
 		}
 	}
@@ -56,6 +118,15 @@ func TestCatalogContainsNodeModelsButOpenAIListIsDirectOnly(t *testing.T) {
 	dashboard := ToDashboardModelList()
 	if len(dashboard) <= len(SupportedModels) {
 		t.Fatalf("dashboard catalog did not include Node models: got %d", len(dashboard))
+	}
+	publicDashboard := ToPublicDashboardModelList()
+	if len(publicDashboard) != len(PublicModelIDs) {
+		t.Fatalf("public dashboard list length=%d want=%d", len(publicDashboard), len(PublicModelIDs))
+	}
+	for _, m := range publicDashboard {
+		if !wantPublic[m.ID] {
+			t.Fatalf("unexpected public dashboard model=%#v", m)
+		}
 	}
 	var foundGPT bool
 	for _, m := range dashboard {

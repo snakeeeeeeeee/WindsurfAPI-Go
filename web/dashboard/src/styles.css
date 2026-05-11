@@ -585,6 +585,35 @@ button:disabled {
   overflow: auto;
 }
 
+.modelDirectory {
+  display: grid;
+  gap: 12px;
+}
+
+.modelDirectoryHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.modelDirectoryHeader > div {
+  display: grid;
+  gap: 4px;
+}
+
+.modelDirectoryHeader span,
+.modelDirectoryMeta {
+  color: var(--muted);
+}
+
+.modelDirectoryMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

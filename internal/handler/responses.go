@@ -82,7 +82,7 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 			writeJSONError(w, http.StatusBadRequest, "invalid request: "+err.Error())
 			return
 		}
-		model := models.GetModelByID(req.Model)
+		model := models.ResolveModelForRequest(req.Model, responsesReasoningEffort(req.Reasoning))
 		if model == nil {
 			writeJSONError(w, http.StatusBadRequest, "unknown model: "+req.Model)
 			return
@@ -400,11 +400,7 @@ func responsesTextFormatHint(text any) string {
 }
 
 func responsesReasoningPrompt(reasoning any) string {
-	m, ok := reasoning.(map[string]any)
-	if !ok || m == nil {
-		return ""
-	}
-	effort := strings.ToLower(strings.TrimSpace(stringValue(m["effort"])))
+	effort := responsesReasoningEffort(reasoning)
 	if effort == "" {
 		return ""
 	}
@@ -420,6 +416,14 @@ func responsesReasoningPrompt(reasoning any) string {
 	default:
 		return "Responses reasoning is requested. Use private reasoning as needed and return any upstream thinking in the reasoning output when available."
 	}
+}
+
+func responsesReasoningEffort(reasoning any) string {
+	m, ok := reasoning.(map[string]any)
+	if !ok || m == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(stringValue(m["effort"])))
 }
 
 func responsesToolsToDirect(tools []any) ([]direct.ToolDefinition, error) {

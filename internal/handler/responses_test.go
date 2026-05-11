@@ -122,6 +122,24 @@ func TestResponsesReasoningPrompt(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerRoutesReasoningEffortModel(t *testing.T) {
+	am := testMessagesAccountManager(t)
+	_, _ = am.AddAccount("first@example.com", "tok-a", "u1", "", "")
+	fake := &fakeMessagesDirectClient{}
+	handler := ResponsesHandler(am, fake, nil, nil)
+	body := `{"model":"claude-opus-4-7","reasoning":{"effort":"max"},"input":"hi"}`
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Model.ID != "claude-opus-4-7-max" {
+		t.Fatalf("routed model calls=%+v", fake.calls)
+	}
+}
+
 func TestWriteResponsesResponseWithToolCall(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeResponsesResponse(rec, "claude-sonnet-4.6", &windsurf.ChatResult{

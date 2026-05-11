@@ -156,7 +156,7 @@ func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChat
 			return
 		}
 
-		model := models.GetModelByID(req.Model)
+		model := models.ResolveModelForRequest(req.Model, openAIReasoningEffort(req))
 		if model == nil {
 			writeJSONError(w, http.StatusBadRequest, "unknown model: "+req.Model)
 			return
@@ -404,12 +404,7 @@ func responseFormatSchema(format map[string]any) any {
 }
 
 func openAIReasoningPrompt(req ChatCompletionRequest) string {
-	effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
-	if effort == "" {
-		if m, ok := req.Reasoning.(map[string]any); ok && m != nil {
-			effort = strings.ToLower(strings.TrimSpace(stringValue(m["effort"])))
-		}
-	}
+	effort := openAIReasoningEffort(req)
 	if effort == "" {
 		return ""
 	}
@@ -425,6 +420,16 @@ func openAIReasoningPrompt(req ChatCompletionRequest) string {
 	default:
 		return "OpenAI-compatible reasoning is requested. Use private reasoning as needed and return any upstream thinking in reasoning_content when available."
 	}
+}
+
+func openAIReasoningEffort(req ChatCompletionRequest) string {
+	effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
+	if effort == "" {
+		if m, ok := req.Reasoning.(map[string]any); ok && m != nil {
+			effort = strings.ToLower(strings.TrimSpace(stringValue(m["effort"])))
+		}
+	}
+	return effort
 }
 
 func prependSystemHint(messages []windsurf.ChatMessage, hint string) []windsurf.ChatMessage {

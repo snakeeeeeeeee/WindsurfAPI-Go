@@ -435,10 +435,12 @@ func DashboardAPIHandler(am *account.Manager, access *modelaccess.Manager, rc *r
 		case "/upstream-endpoints":
 			writeJSON(w, http.StatusOK, dashboardUpstreamEndpoints(dc))
 		case "/models":
-			writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": dashboardModelList(access)})
+			scope := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("scope")))
+			full := scope == "all" || scope == "full" || scope == "legacy"
+			writeJSON(w, http.StatusOK, map[string]any{"object": "list", "scope": dashboardModelScope(full), "data": dashboardModelList(access, full)})
 		case "/model-access":
 			if access == nil {
-				writeJSON(w, http.StatusOK, map[string]any{"models": dashboardModelList(access), "overrides": []any{}, "config": map[string]any{"mode": "all", "list": []string{}}})
+				writeJSON(w, http.StatusOK, map[string]any{"models": dashboardModelList(access, false), "overrides": []any{}, "config": map[string]any{"mode": "all", "list": []string{}}})
 				return
 			}
 			all, err := access.List()
@@ -446,7 +448,7 @@ func DashboardAPIHandler(am *account.Manager, access *modelaccess.Manager, rc *r
 				writeJSONError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"models": dashboardModelList(access), "overrides": all, "config": dashboardModelAccessConfig(access)})
+			writeJSON(w, http.StatusOK, map[string]any{"models": dashboardModelList(access, false), "overrides": all, "config": dashboardModelAccessConfig(access)})
 		case "/legacy", "/ls":
 			if pool == nil {
 				writeJSON(w, http.StatusOK, map[string]any{"entries": []any{}, "legacy": true})
@@ -491,7 +493,7 @@ func dashboardModelAccessCompatAPI(w http.ResponseWriter, r *http.Request, acces
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "config": dashboardModelAccessConfig(access), "models": dashboardModelList(access)})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "config": dashboardModelAccessConfig(access), "models": dashboardModelList(access, false)})
 }
 
 func dashboardModelAccessListMutationAPI(w http.ResponseWriter, r *http.Request, access *modelaccess.Manager, action string) {
@@ -2648,13 +2650,19 @@ func proxyInString(raw string) string {
 	return ""
 }
 
-func dashboardModelList(access *modelaccess.Manager) []models.DashboardModel {
+func dashboardModelList(access *modelaccess.Manager, full bool) []models.DashboardModel {
 	if access == nil {
-		return models.ToDashboardModelList()
+		if full {
+			return models.ToDashboardModelList()
+		}
+		return models.ToPublicDashboardModelList()
 	}
 	raw, err := access.List()
 	if err != nil {
-		return models.ToDashboardModelList()
+		if full {
+			return models.ToDashboardModelList()
+		}
+		return models.ToPublicDashboardModelList()
 	}
 	mapped := map[string]models.DashboardAccess{}
 	for id, item := range raw {
@@ -2666,7 +2674,17 @@ func dashboardModelList(access *modelaccess.Manager) []models.DashboardModel {
 			Notes:             item.Notes,
 		}
 	}
-	return models.ToDashboardModelListWithAccess(mapped)
+	if full {
+		return models.ToDashboardModelListWithAccess(mapped)
+	}
+	return models.ToPublicDashboardModelListWithAccess(mapped)
+}
+
+func dashboardModelScope(full bool) string {
+	if full {
+		return "all"
+	}
+	return "public"
 }
 
 func dashboardModelAccessConfig(access *modelaccess.Manager) map[string]any {

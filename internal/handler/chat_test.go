@@ -223,6 +223,27 @@ func TestExecuteOpenAIChatPassesReasoningPrompt(t *testing.T) {
 	}
 }
 
+func TestChatHandlerRoutesReasoningEffortModel(t *testing.T) {
+	am := testChatAccountManager(t)
+	_, _ = am.AddAccount("first@example.com", "tok-a", "u1", "", "")
+	fake := &fakeDirectChatClient{}
+	handler := ChatCompletionsHandler(nil, am, fake, nil, nil)
+	body := `{"model":"claude-opus-4-7","reasoning_effort":"xhigh","messages":[{"role":"user","content":"hi"}]}`
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Model.ID != "claude-opus-4-7-xhigh" {
+		t.Fatalf("routed model calls=%+v", fake.calls)
+	}
+	if fake.calls[0].Model.ModelUID != "claude-opus-4-7-xhigh" {
+		t.Fatalf("model uid=%q", fake.calls[0].Model.ModelUID)
+	}
+}
+
 func TestExecuteDirectChatStoresAndHitsStickyReuseAccount(t *testing.T) {
 	am := testChatAccountManager(t)
 	id1, _ := am.AddAccount("first@example.com", "tok-a", "u1", "", "")

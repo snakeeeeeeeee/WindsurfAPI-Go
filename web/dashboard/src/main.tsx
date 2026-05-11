@@ -257,6 +257,7 @@ type DashboardModel = {
 };
 
 type ModelsSnapshot = {
+  scope?: string;
   data?: DashboardModel[];
 };
 
@@ -515,6 +516,7 @@ function App() {
   const [accountSelection, setAccountSelection] = useState<RowSelectionState>({});
   const [clearCacheOpen, setClearCacheOpen] = useState(false);
   const [streamingLogs, setStreamingLogs] = useState(false);
+  const [showAllModels, setShowAllModels] = useState(false);
   const [toast, setToast] = useState("");
   const authState = useMemo(() => ({ apiKey, dashboardPassword }), [apiKey, dashboardPassword]);
   const authEnabled = apiKey.length > 0 || dashboardPassword.length > 0;
@@ -612,8 +614,8 @@ function App() {
     refetchInterval: 10000
   });
   const models = useQuery({
-    queryKey: ["models", authState],
-    queryFn: () => fetchJSON<ModelsSnapshot>("/dashboard/api/models", authState),
+    queryKey: ["models", authState, showAllModels],
+    queryFn: () => fetchJSON<ModelsSnapshot>(`/dashboard/api/models${showAllModels ? "?scope=all" : ""}`, authState),
     enabled: authEnabled,
     refetchInterval: 30000
   });
@@ -1015,6 +1017,9 @@ function App() {
             <Panel title="模型目录" icon={<Layers3 />}>
               <ModelTable
                 rows={modelRows}
+                scope={models.data?.scope}
+                showAll={showAllModels}
+                onShowAllChange={setShowAllModels}
                 selected={selected}
                 loading={models.isLoading}
                 busy={updateModelAccess.isPending || resetModelAccess.isPending}
@@ -1978,6 +1983,9 @@ function TablePager<T>({ table, total }: { table: Table<T>; total: number }) {
 
 function ModelTable({
   rows,
+  scope,
+  showAll,
+  onShowAllChange,
   selected,
   loading,
   busy,
@@ -1985,6 +1993,9 @@ function ModelTable({
   onReset
 }: {
   rows: DashboardModel[];
+  scope?: string;
+  showAll: boolean;
+  onShowAllChange: (checked: boolean) => void;
   selected: DebugAccount | null;
   loading: boolean;
   busy: boolean;
@@ -2100,28 +2111,44 @@ function ModelTable({
   if (loading) return <div className="empty">加载模型目录...</div>;
   if (!rows.length) return <div className="empty">暂无模型目录。</div>;
   return (
-    <div className="tableWrap">
-      <table>
-        <thead>
-          {table.getHeaderGroups().map((headerGroup) => (
-            <tr key={headerGroup.id}>
-              {headerGroup.headers.map((header) => (
-                <SortableTH key={header.id} header={header} />
-              ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {table.getRowModel().rows.map((row) => (
-            <tr key={row.id}>
-              {row.getVisibleCells().map((cell) => (
-                <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <TablePager table={table} total={rows.length} />
+    <div className="modelDirectory">
+      <div className="modelDirectoryHeader">
+        <div>
+          <strong>{showAll ? "完整模型目录" : "公开生产模型"}</strong>
+          <span>{showAll ? "包含 Node 兼容目录和未启用模型" : "仅显示 /v1/models 对客户端暴露的模型"}</span>
+        </div>
+        <label className="switchLabel">
+          <Switch checked={showAll} onCheckedChange={onShowAllChange} />
+          显示完整目录
+        </label>
+      </div>
+      <div className="modelDirectoryMeta">
+        <span className="pill neutral">范围：{scope === "all" ? "完整" : "公开"}</span>
+        <span>{rows.length} 个模型</span>
+      </div>
+      <div className="tableWrap">
+        <table>
+          <thead>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <tr key={headerGroup.id}>
+                {headerGroup.headers.map((header) => (
+                  <SortableTH key={header.id} header={header} />
+                ))}
+              </tr>
+            ))}
+          </thead>
+          <tbody>
+            {table.getRowModel().rows.map((row) => (
+              <tr key={row.id}>
+                {row.getVisibleCells().map((cell) => (
+                  <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <TablePager table={table} total={rows.length} />
+      </div>
     </div>
   );
 }
