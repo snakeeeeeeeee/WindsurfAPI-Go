@@ -23,6 +23,14 @@ Direct-only Windsurf API proxy written in Go. The production path talks to Winds
 
 ## Local Run
 
+Create a local config from the tracked example first:
+
+```bash
+cp configs/default.example.yaml configs/default.yaml
+```
+
+`configs/default.yaml` is intentionally ignored by git. Put server-specific API keys, Dashboard password and proxy credentials there, or use environment variables in Docker/systemd.
+
 Start Redis first. The default config enables Redis scheduler coordination and falls back to single-process mode if Redis is unavailable:
 
 ```bash
@@ -45,7 +53,7 @@ Default endpoints:
 - Health: `http://127.0.0.1:3456/healthz`
 - Ready: `http://127.0.0.1:3456/readyz`
 
-Default API key in `configs/default.yaml`:
+Default API key in `configs/default.example.yaml`:
 
 ```text
 sk-windsurf-default
@@ -57,7 +65,7 @@ Default Dashboard login:
 admin / admin
 ```
 
-Change these before exposing the service.
+Change these in your local `configs/default.yaml` before exposing the service.
 
 ## Import Accounts
 
@@ -116,7 +124,7 @@ WINDSURFAPI_DIRECT_TOOL_MODE=native
 
 ## Dynamic Proxy Binding
 
-Configure the provider in `configs/default.yaml` or Dashboard Settings:
+Configure the provider in local `configs/default.yaml` or Dashboard Settings:
 
 ```yaml
 proxy:
@@ -169,6 +177,16 @@ Start the service and Redis:
 docker compose up -d --build
 ```
 
+Compose does not mount `configs/default.yaml` by default, so a fresh clone can start without creating a conflicting tracked config file. For production, prefer environment variables for secrets. If you want to mount a config file instead, create `configs/default.yaml` from the example and add your own volume override:
+
+```yaml
+services:
+  windsurfapi-go:
+    volumes:
+      - ./data:/app/data
+      - ./configs/default.yaml:/app/configs/default.yaml:ro
+```
+
 View logs:
 
 ```bash
@@ -202,7 +220,7 @@ WINDSURFAPI_SCHEDULER_REDIS_ENABLED=true
 WINDSURFAPI_SCHEDULER_REDIS_FAIL_CLOSED=true
 ```
 
-For production, change `WINDSURFAPI_API_KEYS` and `WINDSURFAPI_DASHBOARD_PASSWORD`.
+For production, change `WINDSURFAPI_API_KEYS` and `WINDSURFAPI_DASHBOARD_PASSWORD`. Proxy provider settings can also be supplied through local `configs/default.yaml` or Dashboard Settings after login.
 
 ## Smoke Tests
 
@@ -237,6 +255,6 @@ MODEL=claude-sonnet-4.6 \
 - Single-instance testing does not require nginx.
 - Public production should still use nginx, Caddy, Traefik or a cloud load balancer for TLS, request body limits, SSE no-buffering and outer rate limits.
 - Multi-instance deployment must enable Redis scheduler coordination. Without Redis, do not scale multiple Go instances against the same account pool.
-- Keep `account.txt`, `data/`, `.env*`, local `default.yaml`, logs and binaries out of git.
+- Keep `account.txt`, `data/`, `.env*`, local `default.yaml`, local `configs/default.yaml`, logs and binaries out of git.
 
 More deployment details are in `PRODUCTION.md`.

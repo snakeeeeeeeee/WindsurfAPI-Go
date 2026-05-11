@@ -18,7 +18,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "configs/default.yaml", "配置文件路径")
+	configPath := flag.String("config", config.DefaultConfigPath, "配置文件路径；默认优先 configs/default.yaml，缺失时回退 configs/default.example.yaml")
 	modelID := flag.String("model", "claude-sonnet-4.6", "用于真实验证的模型")
 	timeout := flag.Duration("timeout", 60*time.Second, "单账号验证超时")
 	limit := flag.Int("limit", 0, "最多验证多少个账号；0 表示全部")

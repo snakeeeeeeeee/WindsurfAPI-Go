@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,11 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	DefaultConfigPath        = "configs/default.yaml"
+	DefaultExampleConfigPath = "configs/default.example.yaml"
 )
 
 type ServerConfig struct {
@@ -149,12 +155,19 @@ type Config struct {
 
 func Load(path string) (*Config, error) {
 	if path == "" {
-		path = "configs/default.yaml"
+		path = DefaultConfigPath
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config file: %w", err)
+		if fallbackPath, ok := fallbackConfigPath(path, err); ok {
+			data, err = os.ReadFile(fallbackPath)
+			if err != nil {
+				return nil, fmt.Errorf("read config file %q or fallback %q: %w", path, fallbackPath, err)
+			}
+		} else {
+			return nil, fmt.Errorf("read config file %q: %w", path, err)
+		}
 	}
 
 	cfg := &Config{
@@ -258,6 +271,20 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func fallbackConfigPath(path string, readErr error) (string, bool) {
+	if !errors.Is(readErr, os.ErrNotExist) {
+		return "", false
+	}
+	clean := filepath.Clean(path)
+	if clean == filepath.Clean(DefaultConfigPath) {
+		return DefaultExampleConfigPath, true
+	}
+	if filepath.Base(clean) == "default.yaml" && filepath.Base(filepath.Dir(clean)) == "configs" {
+		return filepath.Join(filepath.Dir(clean), "default.example.yaml"), true
+	}
+	return "", false
 }
 
 func applyRuntimeDefaults(cfg *Config) {

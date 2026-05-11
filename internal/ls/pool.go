@@ -193,7 +193,7 @@ func (p *Pool) RestartKey(ctx context.Context, key string) error {
 
 func (p *Pool) ensure(ctx context.Context, key string) (*Entry, error) {
 	if p.cfg.BinaryPath == "" {
-		return nil, errors.New("ls.binary_path not configured (set ls.binary_path in configs/default.yaml)")
+		return nil, errors.New("ls.binary_path not configured (set ls.binary_path in configs/default.yaml or LS_BINARY_PATH)")
 	}
 
 	for {

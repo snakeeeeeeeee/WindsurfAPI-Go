@@ -16,6 +16,8 @@ coverage
 
 account.txt
 default.yaml
+configs/default.yaml
+!configs/default.example.yaml
 ls-smoke
 
 web/dashboard/node_modules

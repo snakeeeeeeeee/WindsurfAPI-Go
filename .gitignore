@@ -5,6 +5,8 @@ accounts.txt
 .env*
 !.env.example
 /default.yaml
+configs/default.yaml
+!configs/default.example.yaml
 
 # Runtime data
 data/

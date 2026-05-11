@@ -28,7 +28,6 @@ services:
       WINDSURFAPI_DASHBOARD_PASSWORD: "change-me-dashboard-password"
     volumes:
       - ./data:/app/data
-      - ./configs/default.yaml:/app/configs/default.yaml:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3456/readyz"]

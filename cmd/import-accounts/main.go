@@ -33,7 +33,7 @@ type parseWarning struct {
 }
 
 func main() {
-	configPath := flag.String("config", "configs/default.yaml", "配置文件路径")
+	configPath := flag.String("config", config.DefaultConfigPath, "配置文件路径；默认优先 configs/default.yaml，缺失时回退 configs/default.example.yaml")
 	filePath := flag.String("file", "account.txt", "账号文件路径")
 	apply := flag.Bool("apply", false, "真正写入 SQLite；默认只 dry-run")
 	flag.Parse()

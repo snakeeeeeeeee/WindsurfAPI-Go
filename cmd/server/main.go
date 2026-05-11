@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "configs/default.yaml", "配置文件路径")
+	configPath := flag.String("config", config.DefaultConfigPath, "配置文件路径；默认优先 configs/default.yaml，缺失时回退 configs/default.example.yaml")
 	flag.Parse()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -24,7 +24,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "configs/default.yaml", "YAML 配置路径")
+	configPath := flag.String("config", config.DefaultConfigPath, "YAML 配置路径；默认优先 configs/default.yaml，缺失时回退 configs/default.example.yaml")
 	binary := flag.String("binary", "", "LS binary（覆盖 env/config）")
 	dataRoot := flag.String("data-root", "", "LS codeium_dir")
 	mode := flag.String("mode", "status", "冒烟模式：status 或 send")

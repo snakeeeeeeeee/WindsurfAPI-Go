@@ -1,6 +1,74 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestLoadFallsBackToDefaultExampleConfig(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "configs")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	example := []byte("server:\n  port: 4568\nsqlite:\n  path: ./data/test.db\n")
+	if err := os.WriteFile(filepath.Join(configDir, "default.example.yaml"), example, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load fallback failed: %v", err)
+	}
+	if cfg.Server.Port != 4568 {
+		t.Fatalf("port=%d, want fallback example value", cfg.Server.Port)
+	}
+}
+
+func TestLoadExplicitMissingPathDoesNotFallback(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err == nil {
+		t.Fatal("expected missing explicit config path to fail")
+	}
+	if !strings.Contains(err.Error(), "missing.yaml") {
+		t.Fatalf("error=%v, want explicit path in message", err)
+	}
+}
+
+func TestLoadAbsoluteDefaultPathFallsBackToAdjacentExample(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "configs")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	example := []byte("server:\n  port: 4569\nsqlite:\n  path: ./data/test.db\n")
+	if err := os.WriteFile(filepath.Join(configDir, "default.example.yaml"), example, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(filepath.Join(configDir, "default.yaml"))
+	if err != nil {
+		t.Fatalf("Load absolute fallback failed: %v", err)
+	}
+	if cfg.Server.Port != 4569 {
+		t.Fatalf("port=%d, want adjacent example value", cfg.Server.Port)
+	}
+}
 
 func TestApplyRuntimeDefaultsPrefersEnvLSBinaryPath(t *testing.T) {
 	t.Setenv("LS_BINARY_PATH", "/tmp/test-language-server")

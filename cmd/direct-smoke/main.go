@@ -17,7 +17,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "configs/default.yaml", "配置文件路径")
+	configPath := flag.String("config", config.DefaultConfigPath, "配置文件路径；默认优先 configs/default.yaml，缺失时回退 configs/default.example.yaml")
 	accountID := flag.Int("account", 0, "指定账号 id；0 表示选择第一个 enabled 账号")
 	modelID := flag.String("model", "claude-sonnet-4.6", "Cascade 探测模型")
 	timeout := flag.Duration("timeout", 45*time.Second, "每个云端 direct RPC 超时")
