@@ -414,6 +414,13 @@ type AccountFormState = {
   banned: boolean;
 };
 
+type BulkImportResult = {
+  imported?: number;
+  failed?: number;
+  total?: number;
+  warnings?: string[];
+};
+
 type AuthState = {
   apiKey: string;
   dashboardPassword: string;
@@ -683,6 +690,15 @@ function App() {
       }),
     ...mutationOptions
   });
+  const importAccountText = useMutation({
+    mutationFn: (text: string) => sendJSON<BulkImportResult>("/dashboard/api/import-accounts", authState, "POST", { text }),
+    onSuccess: (result) => {
+      const warningText = result.warnings?.length ? `，${result.warnings.length} 条警告` : "";
+      setToast(`导入完成：成功 ${result.imported ?? 0} 个，失败 ${result.failed ?? 0} 个${warningText}`);
+      refreshAll();
+    },
+    onError: (error: Error) => setToast(error.message)
+  });
   const updateAccount = useMutation({
     mutationFn: ({ id, payload }: { id: number; payload: Partial<AccountFormState> }) =>
       sendJSON(`/auth/accounts/${id}`, authState, "PATCH", payload),
@@ -824,6 +840,7 @@ function App() {
   const selectedAccountIDs = useMemo(() => Object.keys(accountSelection).map(Number).filter((id) => Number.isFinite(id)), [accountSelection]);
   const accountsBusy =
     importAccount.isPending ||
+    importAccountText.isPending ||
     updateAccount.isPending ||
     updateBlockedModels.isPending ||
     deleteAccount.isPending ||
@@ -978,6 +995,7 @@ function App() {
                 models={modelRows}
                 busy={accountsBusy}
                 onImport={(payload) => importAccount.mutate(payload)}
+                onImportText={(text) => importAccountText.mutate(text)}
                 onUpdate={(id, payload) => updateAccount.mutate({ id, payload })}
                 onBlockedModels={(id, blocked_models) => updateBlockedModels.mutate({ id, blocked_models })}
                 onRefresh={(id) => refreshAccount.mutate(id)}
@@ -1653,6 +1671,7 @@ function AccountManager({
   models,
   busy,
   onImport,
+  onImportText,
   onUpdate,
   onBlockedModels,
   onRefresh,
@@ -1669,6 +1688,7 @@ function AccountManager({
   models: DashboardModel[];
   busy: boolean;
   onImport: (payload: AccountFormState) => void;
+  onImportText: (text: string) => void;
   onUpdate: (id: number, payload: Partial<AccountFormState>) => void;
   onBlockedModels: (id: number, blockedModels: string[]) => void;
   onRefresh: (id: number) => void;
@@ -1680,6 +1700,7 @@ function AccountManager({
   onDelete: (id: number) => void;
 }) {
   const [form, setForm] = useState<AccountFormState>(emptyForm());
+  const [bulkImportText, setBulkImportText] = useState("");
   const [blockedDraft, setBlockedDraft] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<DebugAccount | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -1751,6 +1772,24 @@ function AccountManager({
           setBulkDeleteOpen(false);
         }}
       />
+
+      <div className="importBox">
+        <div className="blockedHeader">
+          <strong>批量文本导入</strong>
+          <Button className="miniButton" variant="secondary" size="sm" disabled={busy || !bulkImportText.trim()} onClick={() => {
+            onImportText(bulkImportText);
+            setBulkImportText("");
+          }}>
+            <Upload size={14} />
+            导入文本账号
+          </Button>
+        </div>
+        <Textarea
+          value={bulkImportText}
+          placeholder={"user1@mail.com----Windsurf@2025----devin-session-token$eyJhbGc...----auth1_xxxxxxxxxxxx\nuser2@mail.com----Windsurf@2025----devin-session-token$eyJhbGc...----auth1_xxxxxxxxxxxx"}
+          onChange={(event) => setBulkImportText(event.target.value)}
+        />
+      </div>
 
       <AccountBalanceDetails account={selected} />
 
