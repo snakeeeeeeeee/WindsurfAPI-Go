@@ -1,0 +1,79 @@
+server:
+  port: 3456
+  max_request_body_bytes: 26214400
+  api_keys:
+    - "sk-windsurf-default"
+
+sqlite:
+  path: "./data/windsurf.db"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+ls:
+  binary_path: ""  # windsurf-language-server 二进制路径
+  extension_version: "1.5.7"
+  max_instances: 16
+  warmup_on_start: true
+  data_root: "./data/ls"
+  api_server_url: "https://server.self-serve.windsurf.com"
+  register_url: "https://api.codeium.com/register_user/"
+  csrf_token: "windsurf-api-csrf-fixed-token"
+  default_port: 42100
+  ready_seconds: 25
+
+chat:
+  backend: "direct"
+
+direct:
+  hosts:
+    - "server.codeium.com"
+    - "server.self-serve.windsurf.com"
+  timeout_seconds: 30
+  # Experimental: emit one chat_message_prompt per message instead of only a
+  # flattened prompt. Keep disabled until real upstream smoke validates the
+  # field semantics for multi-turn/tool history.
+  native_chat_prompts: false
+
+health:
+  enabled: true
+  interval_seconds: 300
+  timeout_seconds: 20
+  mark_invalid_banned: true
+  check_model_configs: true
+  ready_require_check: false
+  model: "claude-sonnet-4.6"
+
+scheduler:
+  redis_enabled: true
+  redis_fail_closed: false
+  max_inflight_per_account: 4
+  reservation_ttl_seconds: 180
+
+dashboard:
+  enabled: true
+  port: 3457
+  username: "admin"
+  password: "admin"
+
+proxy:
+  default: ""
+  dynamic: []
+  rotate_on_error: true
+  allow_private: false
+  test_url: "https://ipinfo.io/json"
+  cooldown_seconds: 120
+  provider: "novproxy"
+  protocol: "http"
+  host: "us.novproxy.io"
+  port: 1000
+  username_template: "nfgr68136-region-{region}-st-{state}-sid-{sid}-t-{ttl}"
+  password: ""
+  region: "US"
+  state: "New Jersey"
+  ttl_minutes: 120
+
+log:
+  level: "info"  # debug, info, warn, error

@@ -1,0 +1,27 @@
+[Unit]
+Description=WindsurfAPI-Go Direct Claude Backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/windsurfapi-go
+ExecStart=/opt/windsurfapi-go/windsurfapi-go -config /opt/windsurfapi-go/configs/default.yaml
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=35
+Environment=GOMAXPROCS=4
+Environment=WINDSURFAPI_PORT=3456
+Environment=WINDSURFAPI_MAX_REQUEST_BODY_BYTES=26214400
+Environment=WINDSURFAPI_DB_PATH=/opt/windsurfapi-go/data/windsurf.db
+Environment=WINDSURFAPI_DIRECT_TIMEOUT_SECONDS=30
+Environment=WINDSURFAPI_HEALTH_MODEL=claude-sonnet-4.6
+Environment=WINDSURFAPI_SCHEDULER_REDIS_FAIL_CLOSED=false
+# Set a real key before exposing the service.
+Environment=WINDSURFAPI_API_KEYS=sk-windsurf-default
+# Required for non-local Dashboard/Admin API access.
+Environment=WINDSURFAPI_DASHBOARD_PASSWORD=change-me-dashboard-password
+
+[Install]
+WantedBy=multi-user.target

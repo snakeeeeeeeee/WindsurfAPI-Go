@@ -1,0 +1,46 @@
+# Sensitive local inputs
+account.txt
+accounts.txt
+*.env
+.env*
+!.env.example
+/default.yaml
+
+# Runtime data
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+logs/
+tmp/
+
+# Local binaries and build output
+bin/
+/dist/
+build/
+coverage/
+/ls-smoke
+*.exe
+*.test
+*.out
+
+# Go
+vendor/
+
+# Frontend
+node_modules/
+.vite/
+*.tsbuildinfo
+web/dashboard/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
