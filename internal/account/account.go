@@ -57,6 +57,7 @@ type Account struct {
 	ProxyURL           string     `json:"proxy_url"`
 	Tier               string     `json:"tier"`
 	PlanName           string     `json:"plan_name,omitempty"`
+	ModelConfigCount   int        `json:"model_config_count,omitempty"`
 	RateLimitedUntil   *time.Time `json:"rate_limited_until,omitempty"`
 	QuotaDailyPercent  *float64   `json:"quota_daily_percent,omitempty"`
 	QuotaWeeklyPercent *float64   `json:"quota_weekly_percent,omitempty"`
@@ -177,6 +178,7 @@ type DebugAccount struct {
 	ProxyURLSet        bool              `json:"proxy_url_set"`
 	Tier               string            `json:"tier"`
 	PlanName           string            `json:"plan_name,omitempty"`
+	ModelConfigCount   int               `json:"model_config_count,omitempty"`
 	Enabled            bool              `json:"enabled"`
 	Banned             bool              `json:"banned"`
 	Notes              string            `json:"notes"`
@@ -228,6 +230,7 @@ type HealthUpdate struct {
 	OverageBalance   *float64
 	PlanStart        string
 	PlanEnd          string
+	ModelConfigCount int
 	RateLimitedUntil *time.Time
 	HealthCheckedAt  time.Time
 	Note             string
@@ -331,7 +334,10 @@ func (m *Manager) ReserveAccount(ctx context.Context, modelID string, accountID 
 	st := m.stateLocked(a.ID)
 	m.applyDBCooldownLocked(st, modelID, *a)
 	m.pruneRuntimeHealthLocked(st, now)
-	if inCooldown(st, modelID, now) || inBreaker(st, modelID, now) || rateLimited(*a, now) || m.modelDisabledLocked(a.ID, modelID) {
+	if inCooldown(st, modelID, now) || inBreaker(st, modelID, now) || rateLimited(*a, now) || m.modelDisabledLocked(a.ID, modelID) || modelUnavailableByHealth(*a, modelID) {
+		if modelUnavailableByHealth(*a, modelID) {
+			m.recordEventLocked(DebugEvent{Time: now, Account: a.ID, Model: modelID, Class: ErrorModelNotAvailable, Message: "model_unavailable_by_account_health"})
+		}
 		return nil, ErrNoAvailableAccount
 	}
 	if m.maxInflightPerAccount > 0 && st.inflight >= m.maxInflightPerAccount {
@@ -402,7 +408,10 @@ func (m *Manager) tryReserve(modelID string, allowed map[int]bool, exclude map[i
 		st := m.stateLocked(a.ID)
 		m.applyDBCooldownLocked(st, modelID, a)
 		m.pruneRuntimeHealthLocked(st, now)
-		if inCooldown(st, modelID, now) || inBreaker(st, modelID, now) || rateLimited(a, now) || m.modelDisabledLocked(a.ID, modelID) {
+		if inCooldown(st, modelID, now) || inBreaker(st, modelID, now) || rateLimited(a, now) || m.modelDisabledLocked(a.ID, modelID) || modelUnavailableByHealth(a, modelID) {
+			if modelUnavailableByHealth(a, modelID) {
+				m.recordEventLocked(DebugEvent{Time: now, Account: a.ID, Model: modelID, Class: ErrorModelNotAvailable, Message: "model_unavailable_by_account_health"})
+			}
 			continue
 		}
 		if m.maxInflightPerAccount > 0 && st.inflight >= m.maxInflightPerAccount {
@@ -737,6 +746,7 @@ func (m *Manager) Snapshot() SchedulerSnapshot {
 			ProxyURLSet:        strings.TrimSpace(a.ProxyURL) != "",
 			Tier:               a.Tier,
 			PlanName:           a.PlanName,
+			ModelConfigCount:   a.ModelConfigCount,
 			Enabled:            a.Enabled,
 			Banned:             a.Banned,
 			Notes:              a.Notes,
@@ -797,7 +807,7 @@ func (m *Manager) GetAllAccounts() ([]Account, error) {
 	return scanAccounts(rows)
 }
 
-const accountSelectSQL = `SELECT id, email, firebase_token, user_id, proxy_url, tier, plan_name, rate_limited_until, quota_daily_percent, quota_weekly_percent, quota_daily_reset_at, quota_weekly_reset_at, prompt_limit, prompt_used, prompt_remaining, flex_limit, flex_used, flex_remaining, overage_balance, plan_start, plan_end, health_checked_at, last_used_at, enabled, banned, notes, created_at, updated_at FROM accounts`
+const accountSelectSQL = `SELECT id, email, firebase_token, user_id, proxy_url, tier, plan_name, model_config_count, rate_limited_until, quota_daily_percent, quota_weekly_percent, quota_daily_reset_at, quota_weekly_reset_at, prompt_limit, prompt_used, prompt_remaining, flex_limit, flex_used, flex_remaining, overage_balance, plan_start, plan_end, health_checked_at, last_used_at, enabled, banned, notes, created_at, updated_at FROM accounts`
 
 // GetAccount 获取单个账号。
 func (m *Manager) GetAccount(id int) (*Account, error) {
@@ -851,7 +861,7 @@ func (m *Manager) UpsertAccount(email, firebaseToken, userID, proxyURL, notes st
 func (m *Manager) UpdateAccount(id int, fields map[string]interface{}) error {
 	allowed := map[string]bool{
 		"email": true, "firebase_token": true, "user_id": true,
-		"proxy_url": true, "tier": true, "plan_name": true, "rate_limited_until": true,
+		"proxy_url": true, "tier": true, "plan_name": true, "model_config_count": true, "rate_limited_until": true,
 		"quota_daily_percent": true, "quota_weekly_percent": true,
 		"quota_daily_reset_at": true, "quota_weekly_reset_at": true,
 		"prompt_limit": true, "prompt_used": true, "prompt_remaining": true,
@@ -932,6 +942,7 @@ func (m *Manager) UpdateHealthDetails(accountID int, update HealthUpdate) error 
 	fields["overage_balance"] = nullableFloat(update.OverageBalance)
 	fields["plan_start"] = strings.TrimSpace(update.PlanStart)
 	fields["plan_end"] = strings.TrimSpace(update.PlanEnd)
+	fields["model_config_count"] = update.ModelConfigCount
 	if !update.HealthCheckedAt.IsZero() {
 		fields["health_checked_at"] = update.HealthCheckedAt
 	} else {
@@ -1396,6 +1407,24 @@ func droughtPenalty(score float64) int {
 	}
 }
 
+func modelUnavailableByHealth(a Account, modelID string) bool {
+	if a.ModelConfigCount <= 0 {
+		return false
+	}
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if modelID == "" {
+		return false
+	}
+	if strings.Contains(modelID, "claude-opus-4-7") ||
+		strings.Contains(modelID, "claude-opus-4.6") ||
+		strings.Contains(modelID, "claude-opus-4-6") ||
+		strings.Contains(modelID, "claude-sonnet-4.6") ||
+		strings.Contains(modelID, "claude-sonnet-4-6") {
+		return a.ModelConfigCount < 100
+	}
+	return false
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -1416,8 +1445,9 @@ func scanAccount(row rowScanner, a *Account) error {
 	var tier, planName, planStart, planEnd sql.NullString
 	var rateLimited, dailyReset, weeklyReset, healthChecked, lastUsed sql.NullTime
 	var daily, weekly, promptLimit, promptUsed, promptRemaining, flexLimit, flexUsed, flexRemaining, overage sql.NullFloat64
+	var modelConfigCount sql.NullInt64
 	err := row.Scan(
-		&a.ID, &a.Email, &a.FirebaseToken, &a.UserID, &a.ProxyURL, &tier, &planName, &rateLimited,
+		&a.ID, &a.Email, &a.FirebaseToken, &a.UserID, &a.ProxyURL, &tier, &planName, &modelConfigCount, &rateLimited,
 		&daily, &weekly, &dailyReset, &weeklyReset,
 		&promptLimit, &promptUsed, &promptRemaining, &flexLimit, &flexUsed, &flexRemaining, &overage,
 		&planStart, &planEnd, &healthChecked, &lastUsed, &a.Enabled, &a.Banned, &a.Notes, &a.CreatedAt, &a.UpdatedAt,
@@ -1435,6 +1465,9 @@ func scanAccount(row rowScanner, a *Account) error {
 	}
 	if planName.Valid {
 		a.PlanName = planName.String
+	}
+	if modelConfigCount.Valid {
+		a.ModelConfigCount = int(modelConfigCount.Int64)
 	}
 	if daily.Valid {
 		a.QuotaDailyPercent = &daily.Float64

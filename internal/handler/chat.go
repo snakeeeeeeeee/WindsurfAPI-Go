@@ -27,7 +27,7 @@ import (
 
 const (
 	fastSwitchMaxAttempts = 9
-	fastSwitchBudget      = 3 * time.Second
+	fastSwitchBudget      = 8 * time.Second
 )
 
 // ChatCompletionRequest mirrors the OpenAI chat completion request.
@@ -553,6 +553,10 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 	if route == "" {
 		route = "chat"
 	}
+	if params.Model != nil {
+		log.Printf("req_id=%s route=%s event=direct_chat_shape model=%s tool_mode=%s %s", reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), directRequestShape(params))
+	}
+	shape := directRequestShape(params)
 	toolsDigest := directToolsDigest(params.Tools)
 	toolChoiceDigest := directToolChoiceDigest(params.ToolChoice)
 	exactFingerprint := ""
@@ -625,6 +629,7 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 		if params.HTTPWriter != nil {
 			params.HTTPWriter.Header().Set("X-Windsurf-Account-ID", fmt.Sprintf("%d", res.Account.ID))
 			params.HTTPWriter.Header().Set("X-Windsurf-Attempt", fmt.Sprintf("%d", attempt))
+			params.HTTPWriter.Header().Set("X-Windsurf-Tool-Mode", string(direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages)))
 		}
 		proxyRes := proxypool.Reservation{ProxyURL: res.Account.ProxyURL}
 		if params.ProxyPool != nil {
@@ -719,8 +724,8 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 					rp.Checkin(fp, &cp, reuseTTL)
 				}
 			}
-			log.Printf("req_id=%s route=%s event=direct_chat_ok model=%s account_id=%d attempt=%d total_ms=%d send_ms=%d reuse_hit=%v usage_in=%d usage_out=%d cache_read=%d tool_call_count=%d",
-				reqID, route, params.Model.ID, res.Account.ID, attempt, time.Since(start).Milliseconds(), time.Since(sendStarted).Milliseconds(), reuseHit,
+			log.Printf("req_id=%s route=%s event=direct_chat_ok model=%s tool_mode=%s account_id=%d attempt=%d total_ms=%d send_ms=%d reuse_hit=%v usage_in=%d usage_out=%d cache_read=%d tool_call_count=%d",
+				reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), res.Account.ID, attempt, time.Since(start).Milliseconds(), time.Since(sendStarted).Milliseconds(), reuseHit,
 				usageIn(result), usageOut(result), usageCacheRead(result), len(result.ToolCalls))
 			recordRequestEvent(RequestEvent{
 				RequestID:       reqID,
@@ -785,13 +790,45 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 			return nil, http.StatusOK, nil
 		}
 		if !retryableClass(class) || time.Since(start) >= fastSwitchBudget {
-			log.Printf("req_id=%s route=%s event=direct_chat_fail model=%s account_id=%d attempt=%d class=%s retry=false total_ms=%d err=%s", reqID, route, params.Model.ID, res.Account.ID, attempt, class, time.Since(start).Milliseconds(), redact.Text(err.Error()))
+			log.Printf("req_id=%s route=%s event=direct_chat_fail model=%s tool_mode=%s account_id=%d attempt=%d class=%s retry=false total_ms=%d err=%s %s", reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), res.Account.ID, attempt, class, time.Since(start).Milliseconds(), redact.Text(err.Error()), shape)
 			recordRequestEvent(RequestEvent{RequestID: reqID, Route: route, Model: params.Model.ID, CallerKeyHash: callerHash, AccountID: res.Account.ID, Attempt: attempt, Status: "error", HTTPStatus: statusForClass(class), ErrorClass: class, Error: err.Error(), Retry: attempt > 1, Stream: params.Stream, LatencyMS: time.Since(start).Milliseconds(), SendMS: time.Since(sendStarted).Milliseconds(), ToolCallCount: len(params.Tools), ReuseHit: reuseHit, ReuseMissReason: reuseMissReason})
 			return nil, statusForClass(class), err
 		}
-		log.Printf("req_id=%s route=%s event=direct_chat_retry model=%s account_id=%d attempt=%d class=%s retry=true total_ms=%d err=%s", reqID, route, params.Model.ID, res.Account.ID, attempt, class, time.Since(start).Milliseconds(), redact.Text(err.Error()))
+		log.Printf("req_id=%s route=%s event=direct_chat_retry model=%s tool_mode=%s account_id=%d attempt=%d class=%s retry=true total_ms=%d err=%s %s", reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), res.Account.ID, attempt, class, time.Since(start).Milliseconds(), redact.Text(err.Error()), shape)
 	}
 	return nil, statusForClass(lastClass), lastErr
+}
+
+func directRequestShape(params directChatParams) string {
+	var systemBytes, userBytes, assistantBytes, toolResultBytes, toolHistory int
+	for _, msg := range params.Messages {
+		n := len(msg.Content)
+		switch strings.ToLower(strings.TrimSpace(msg.Role)) {
+		case "system":
+			systemBytes += n
+		case "assistant":
+			assistantBytes += n
+			toolHistory += len(msg.ToolCalls)
+		case "tool":
+			toolResultBytes += n
+			if strings.TrimSpace(msg.ToolCallID) != "" {
+				toolHistory++
+			}
+		default:
+			userBytes += n
+		}
+	}
+	choice := "none"
+	if params.ToolChoice != nil {
+		switch {
+		case strings.TrimSpace(params.ToolChoice.ToolName) != "":
+			choice = "tool:" + sanitize.Text(params.ToolChoice.ToolName)
+		case strings.TrimSpace(params.ToolChoice.OptionName) != "":
+			choice = sanitize.Text(params.ToolChoice.OptionName)
+		}
+	}
+	return fmt.Sprintf("shape_turns=%d system_bytes=%d user_bytes=%d assistant_bytes=%d tool_result_bytes=%d tools=%d tool_history=%d tool_choice=%s thinking_bytes=%d stream=%v",
+		len(params.Messages), systemBytes, userBytes, assistantBytes, toolResultBytes, len(params.Tools), toolHistory, choice, len(params.Thinking), params.Stream)
 }
 
 func writeUnaryResponse(w http.ResponseWriter, modelID string, result *windsurf.ChatResult) {

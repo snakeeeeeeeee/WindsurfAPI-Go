@@ -68,7 +68,9 @@ func main() {
 			okCount++
 			if *apply {
 				note := fmt.Sprintf("account-check ok model=%s plan=%s checked_at=%s", model.ID, result.PlanName, time.Now().Format(time.RFC3339))
-				if updateErr := mgr.UpdateHealthDetails(a.ID, health.AccountHealthUpdate(health.TierFromPlan(result.PlanName), result.UserStatus, result.RateLimitedUntil, note)); updateErr != nil {
+				update := health.AccountHealthUpdate(health.TierFromPlan(result.PlanName), result.UserStatus, result.RateLimitedUntil, note)
+				update.ModelConfigCount = result.ModelConfigCount
+				if updateErr := mgr.UpdateHealthDetails(a.ID, update); updateErr != nil {
 					fmt.Printf("account=%d email=%s status=ok update_error=%q\n", a.ID, a.Email, updateErr.Error())
 				}
 			}
@@ -96,6 +98,7 @@ type checkResult struct {
 	UserStatus       *direct.UserStatus
 	DailyPercent     *float64
 	WeeklyPercent    *float64
+	ModelConfigCount int
 	RateLimitedUntil *time.Time
 }
 
@@ -151,14 +154,16 @@ func checkOne(client *direct.Client, a *account.Account, model *models.Model, ti
 			return checkResult{Status: "failed"}, fmt.Errorf("empty assistant text")
 		}
 	}
+	configCount := len(cfgs.Configs)
 	fmt.Printf("account=%d email=%s status=ok plan=%s daily=%s weekly=%s rate_capacity=%v configs=%d elapsed=%s text=%q\n",
-		a.ID, a.Email, status.PlanName, pct(status.DailyPercent), pct(status.WeeklyPercent), rl.HasCapacity, len(cfgs.Configs), time.Since(start).Round(time.Millisecond), truncate(text, 80))
+		a.ID, a.Email, status.PlanName, pct(status.DailyPercent), pct(status.WeeklyPercent), rl.HasCapacity, configCount, time.Since(start).Round(time.Millisecond), truncate(text, 80))
 	return checkResult{
 		Status:           "ok",
 		PlanName:         status.PlanName,
 		UserStatus:       status,
 		DailyPercent:     status.DailyPercent,
 		WeeklyPercent:    status.WeeklyPercent,
+		ModelConfigCount: configCount,
 		RateLimitedUntil: retryUntil,
 	}, nil
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/zhangyu/windsurfapi-go/internal/config"
 	"github.com/zhangyu/windsurfapi-go/internal/models"
 	"github.com/zhangyu/windsurfapi-go/internal/store"
+	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf/direct"
 )
 
@@ -23,6 +24,7 @@ func main() {
 	probeCascade := flag.Bool("probe-cascade", false, "实验性探测云端 Cascade Start/Send/Poll；会消耗一次消息额度")
 	probeAPIChat := flag.Bool("probe-api-chat", false, "实验性探测云端 ApiServerService/GetChatMessage；会消耗一次消息额度")
 	probeTools := flag.Bool("probe-tools", false, "实验性探测 direct ApiServerService/GetChatMessage native tool_calls；会消耗一次消息额度")
+	probeChatTools := flag.Bool("probe-chat-tools", false, "探测生产 direct.Chat 工具链；Opus 4.7 默认走 text tool emulation，会消耗一次消息额度")
 	nativePrompts := flag.Bool("native-chat-prompts", false, "实验性在 direct Chat 里发送多条 chat_message_prompts；会消耗额度且默认关闭")
 	apiChatRequestType := flag.Uint64("api-chat-request-type", 5, "GetChatMessage request_type；默认 5=CASCADE")
 	apiChatPrompt := flag.String("api-chat-prompt", "Reply with exactly: hi", "GetChatMessage 探测 prompt")
@@ -86,13 +88,44 @@ func main() {
 			len(cfgs.Configs), len(cfgs.Sorts), cfgs.DefaultOverride != nil)
 	}
 
-	if !*probeCascade && !*probeAPIChat && !*probeTools {
-		fmt.Println("Chat direct probes skipped. Add -probe-cascade, -probe-api-chat, or -probe-tools to test quota-consuming chat paths without LS.")
+	if !*probeCascade && !*probeAPIChat && !*probeTools && !*probeChatTools {
+		fmt.Println("Chat direct probes skipped. Add -probe-cascade, -probe-api-chat, -probe-tools, or -probe-chat-tools to test quota-consuming chat paths without LS.")
 		return
 	}
 	model := models.GetModelByID(*modelID)
 	if model == nil {
 		log.Fatalf("unknown model: %s", *modelID)
+	}
+	if *probeChatTools {
+		ctx, cancel = context.WithTimeout(context.Background(), *timeout+60*time.Second)
+		defer cancel()
+		tools := []direct.ToolDefinition{{
+			Name:        "echo_text",
+			Description: "Echoes the provided text back to the caller.",
+			SchemaJSON:  `{"type":"object","properties":{"text":{"type":"string","description":"Text to echo"}},"required":["text"],"additionalProperties":false}`,
+			Strict:      true,
+		}}
+		choice := &direct.ToolChoice{ToolName: "echo_text"}
+		result, err := client.Chat(ctx, direct.ChatRequest{
+			APIKey:     acct.FirebaseToken,
+			ProxyURL:   acct.ProxyURL,
+			Model:      model,
+			Messages:   []windsurf.ChatMessage{{Role: "user", Content: "Use the echo_text tool exactly once with text set to HELLO_FROM_DIRECT_TOOL."}},
+			Tools:      tools,
+			ToolChoice: choice,
+		})
+		if err != nil {
+			fmt.Printf("DirectChatTools failed model=%s tool_mode=%s elapsed<=%s err=%q\n", model.ID, direct.ToolModeForRequest(model, tools, choice, nil), *timeout+60*time.Second, err.Error())
+		} else {
+			fmt.Printf("DirectChatTools ok model=%s tool_mode=%s text=%q thinking=%q tool_calls=%d finish=%s\n",
+				model.ID, direct.ToolModeForRequest(model, tools, choice, nil), truncate(result.Text, 120), truncate(result.Thinking, 80), len(result.ToolCalls), result.FinishReason)
+			for i, call := range result.ToolCalls {
+				fmt.Printf("tool_call[%d] id=%s name=%s args=%s\n", i, call.ID, call.Name, truncate(call.ArgumentsJSON, 220))
+			}
+		}
+		if !*probeAPIChat && !*probeTools && !*probeCascade {
+			return
+		}
 	}
 	if *probeAPIChat || *probeTools {
 		ctx, cancel = context.WithTimeout(context.Background(), *timeout+60*time.Second)

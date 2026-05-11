@@ -91,6 +91,29 @@ Run a real direct chat smoke only when you are ready to spend quota:
 go run ./cmd/direct-smoke -account 1 -model claude-sonnet-4.6 -timeout 45s -probe-api-chat
 ```
 
+## Model Routing Notes
+
+Public model IDs are intentionally small:
+
+- `claude-opus-4-7`
+- `claude-opus-4-6`
+- `claude-opus-4-6-thinking`
+- `claude-sonnet-4-6`
+- `claude-haiku-4-5`
+- `claude-haiku-4-5-20251001`
+
+`reasoning_effort` / `output_config.effort` routes Opus 4.7 requests to Windsurf's low/medium/high/xhigh/max UIDs. One Direct-only detail matters for Claude Code/Cline: Windsurf cloud currently returns upstream internal errors for `claude-opus-4-7*` when the request uses native `GetChatMessage.tools` fields. Go keeps the requested Opus 4.7 model, but sends those tool turns through a text tool protocol and parses the model output back into OpenAI/Anthropic/Responses tool calls. Pure text Opus 4.7 requests still use the normal Direct path.
+
+Runtime switches:
+
+```bash
+# Force all Direct tool requests through text tool emulation.
+WINDSURFAPI_DIRECT_TOOL_MODE=emulated
+
+# Force native upstream tool fields for diagnostics after validating they are stable.
+WINDSURFAPI_DIRECT_TOOL_MODE=native
+```
+
 ## Dynamic Proxy Binding
 
 Configure the provider in `configs/default.yaml` or Dashboard Settings:

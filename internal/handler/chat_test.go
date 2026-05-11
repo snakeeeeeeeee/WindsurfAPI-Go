@@ -244,6 +244,37 @@ func TestChatHandlerRoutesReasoningEffortModel(t *testing.T) {
 	}
 }
 
+func TestChatHandlerKeepsOpus47ModelForToolRequests(t *testing.T) {
+	am := testChatAccountManager(t)
+	_, _ = am.AddAccount("first@example.com", "tok-a", "u1", "", "")
+	fake := &fakeDirectChatClient{}
+	handler := ChatCompletionsHandler(nil, am, fake, nil, nil)
+	body := `{"model":"claude-opus-4-7","reasoning_effort":"xhigh","messages":[{"role":"user","content":"call tool"}],"tools":[{"type":"function","function":{"name":"echo_text","parameters":{"type":"object"}}}]}`
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Model.ID != "claude-opus-4-7-xhigh" {
+		t.Fatalf("tool request should keep requested Opus 4.7 model, calls=%+v", fake.calls)
+	}
+	if rec.Header().Get("X-Windsurf-Requested-Model") != "" || rec.Header().Get("X-Windsurf-Served-Model") != "" {
+		t.Fatalf("fallback headers should not be present requested=%q served=%q", rec.Header().Get("X-Windsurf-Requested-Model"), rec.Header().Get("X-Windsurf-Served-Model"))
+	}
+	if rec.Header().Get("X-Windsurf-Tool-Mode") != "emulated" {
+		t.Fatalf("tool mode header=%q", rec.Header().Get("X-Windsurf-Tool-Mode"))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if resp["model"] != "claude-opus-4-7-xhigh" {
+		t.Fatalf("response model should preserve requested routing model, got=%v", resp["model"])
+	}
+}
+
 func TestExecuteDirectChatStoresAndHitsStickyReuseAccount(t *testing.T) {
 	am := testChatAccountManager(t)
 	id1, _ := am.AddAccount("first@example.com", "tok-a", "u1", "", "")

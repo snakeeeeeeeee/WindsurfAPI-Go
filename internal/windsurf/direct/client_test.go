@@ -222,6 +222,56 @@ func TestProbeAPIChatResultOKAllowsToolOnly(t *testing.T) {
 	}
 }
 
+func TestToolModeForOpus47UsesEmulationWithoutChangingModel(t *testing.T) {
+	model := models.GetModelByID("claude-opus-4-7-xhigh")
+	tools := []ToolDefinition{{Name: "echo_text", SchemaJSON: `{"type":"object"}`}}
+	if got := ToolModeForRequest(model, tools, &ToolChoice{ToolName: "echo_text"}, []windsurf.ChatMessage{{Role: "user", Content: "hi"}}); got != ToolModeEmulated {
+		t.Fatalf("mode=%s", got)
+	}
+	if model.ID != "claude-opus-4-7-xhigh" {
+		t.Fatalf("tool emulation must not mutate or downgrade model: %+v", model)
+	}
+	if got := ToolModeForRequest(models.GetModelByID("claude-opus-4.6"), tools, nil, nil); got != ToolModeNative {
+		t.Fatalf("opus 4.6 should keep native tools, got=%s", got)
+	}
+	if got := ToolModeForRequest(model, nil, nil, nil); got != ToolModeNone {
+		t.Fatalf("no tools mode=%s", got)
+	}
+}
+
+func TestBuildEmulatedToolPromptAndParser(t *testing.T) {
+	prompt := BuildEmulatedToolPrompt(
+		[]windsurf.ChatMessage{{Role: "user", Content: "Use echo_text."}},
+		[]ToolDefinition{{Name: "echo_text", Description: "Echo input", SchemaJSON: `{"type":"object","properties":{"text":{"type":"string"}}}`}},
+		&ToolChoice{ToolName: "echo_text"},
+	)
+	for _, want := range []string{
+		"Output exactly one tool call block",
+		"<tool_call>",
+		"echo_text",
+		`"text"`,
+		"Use echo_text.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q in %q", want, prompt)
+		}
+	}
+	text, calls := parseEmulatedToolCalls(` <tool_call>{"name":"echo_text","arguments":{"text":"HELLO"}}</tool_call> `)
+	if strings.TrimSpace(text) != "" {
+		t.Fatalf("text=%q", text)
+	}
+	if len(calls) != 1 || calls[0].Name != "echo_text" || calls[0].ArgumentsJSON != `{"text":"HELLO"}` || calls[0].ID == "" {
+		t.Fatalf("calls=%+v", calls)
+	}
+}
+
+func TestParseEmulatedToolCallsSupportsOpenAIShape(t *testing.T) {
+	_, calls := parseEmulatedToolCalls(`{"function_call":{"name":"bash","arguments":"{\"command\":\"pwd\"}"}}`)
+	if len(calls) != 1 || calls[0].Name != "bash" || calls[0].ArgumentsJSON != `{"command":"pwd"}` {
+		t.Fatalf("calls=%+v", calls)
+	}
+}
+
 func TestHTTPClientUsesPerProxyCacheAndMasksCredentials(t *testing.T) {
 	c := NewClient(WithTimeout(3), WithAllowPrivateProxy(true))
 	first, err := c.httpClient("http://user:secret@127.0.0.1:18080")

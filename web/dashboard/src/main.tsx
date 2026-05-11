@@ -64,6 +64,7 @@ type DebugAccount = {
   proxy_url_set?: boolean;
   tier: string;
   plan_name?: string;
+  model_config_count?: number;
   enabled: boolean;
   banned: boolean;
   notes?: string;
@@ -1584,12 +1585,17 @@ function AccountTable({
       {
         accessorKey: "plan_name",
         header: "套餐",
-        cell: ({ row }) => row.original.plan_name || "-"
+        cell: ({ row }) => <AccountPlanBadge account={row.original} />
       },
       {
         accessorKey: "tier",
         header: "等级",
         cell: ({ row }) => formatTier(row.original.tier)
+      },
+      {
+        accessorKey: "model_config_count",
+        header: "模型能力",
+        cell: ({ row }) => <ModelCapabilityBadge account={row.original} />
       },
       {
         id: "status",
@@ -1939,6 +1945,8 @@ function AccountBalanceDetails({ account }: { account: DebugAccount | null }) {
           ["套餐", account.plan_name || formatTier(account.tier)],
           ["计划开始", formatDateTime(account.plan_start)],
           ["计划结束", formatDateTime(account.plan_end)],
+          ["模型配置", formatModelConfigCount(account.model_config_count)],
+          ["能力状态", modelCapabilityText(account)],
           ["日额度", formatPercent(account.quota_daily_percent)],
           ["周额度", formatPercent(account.quota_weekly_percent)],
           ["日重置", formatDateTime(account.quota_daily_reset_at)],
@@ -3529,6 +3537,57 @@ function formatTier(value: string | undefined): string {
     default:
       return value;
   }
+}
+
+function AccountPlanBadge({ account }: { account: DebugAccount }) {
+  const label = account.plan_name || formatTier(account.tier);
+  if (isFreeAccount(account)) {
+    return <span className="pill bad">免费账号 · {label}</span>;
+  }
+  if (isLowCapabilityAccount(account)) {
+    return <span className="pill warn">低能力 · {label}</span>;
+  }
+  return <span>{label || "-"}</span>;
+}
+
+function ModelCapabilityBadge({ account }: { account: DebugAccount }) {
+  if (isFreeAccount(account)) {
+    return <span className="pill bad">{modelCapabilityText(account)}</span>;
+  }
+  if (isLowCapabilityAccount(account)) {
+    return <span className="pill warn">{modelCapabilityText(account)}</span>;
+  }
+  if ((account.model_config_count ?? 0) >= 100) {
+    return <span className="pill good">{modelCapabilityText(account)}</span>;
+  }
+  return <span className="pill">未探测</span>;
+}
+
+function isFreeAccount(account: DebugAccount): boolean {
+  return account.tier === "free" || (account.plan_name || "").toLowerCase().includes("free");
+}
+
+function isLowCapabilityAccount(account: DebugAccount): boolean {
+  const count = account.model_config_count ?? 0;
+  return isFreeAccount(account) || (count > 0 && count < 100);
+}
+
+function modelCapabilityText(account: DebugAccount): string {
+  const count = account.model_config_count ?? 0;
+  if (isFreeAccount(account)) {
+    return count > 0 ? `低能力账号 · configs=${count}` : "低能力账号";
+  }
+  if (count <= 0) {
+    return "未探测";
+  }
+  if (count < 100) {
+    return `低能力账号 · configs=${count}`;
+  }
+  return `完整能力 · configs=${count}`;
+}
+
+function formatModelConfigCount(value: number | undefined): string {
+  return value && value > 0 ? `${value} 个` : "未探测";
 }
 
 function localizeSecretMessage(message: string): string {

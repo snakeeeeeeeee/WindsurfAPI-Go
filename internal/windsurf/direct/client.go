@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -223,6 +225,14 @@ type ToolChoice struct {
 	OptionName string
 	ToolName   string
 }
+
+type ToolMode string
+
+const (
+	ToolModeNative   ToolMode = "native"
+	ToolModeEmulated ToolMode = "emulated"
+	ToolModeNone     ToolMode = "none"
+)
 
 type Stats struct {
 	Protocol      string    `json:"protocol"`
@@ -505,7 +515,17 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*windsurf.ChatResul
 }
 
 func (c *Client) chatHost(ctx context.Context, host string, req ChatRequest, prompt string) (*windsurf.ChatResult, error) {
-	body := buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, prompt, 5, req.Tools, req.ToolChoice, req.DisableParallelToolCalls, c.nativePrompts, req.Messages)
+	toolMode := ToolModeForRequest(req.Model, req.Tools, req.ToolChoice, req.Messages)
+	upstreamTools := req.Tools
+	upstreamChoice := req.ToolChoice
+	upstreamDisableParallel := req.DisableParallelToolCalls
+	if toolMode == ToolModeEmulated {
+		prompt = BuildEmulatedToolPrompt(req.Messages, req.Tools, req.ToolChoice)
+		upstreamTools = nil
+		upstreamChoice = nil
+		upstreamDisableParallel = false
+	}
+	body := buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, prompt, 5, upstreamTools, upstreamChoice, upstreamDisableParallel, c.nativePrompts, req.Messages)
 	frames, err := c.postProtoFramesWithProtocol(ctx, host, getChatMessagePath, body, true, req.ProxyURL)
 	if err != nil {
 		return nil, err
@@ -523,6 +543,10 @@ func (c *Client) chatHost(ctx context.Context, host string, req ChatRequest, pro
 		}
 		if parsed.Assistant != "" {
 			parsed.Assistant = sanitize.Text(parsed.Assistant)
+			if toolMode == ToolModeEmulated {
+				result.Text += parsed.Assistant
+				continue
+			}
 			if !emitted && req.OnFirstDelta != nil {
 				req.OnFirstDelta()
 				emitted = true
@@ -567,6 +591,30 @@ func (c *Client) chatHost(ctx context.Context, host string, req ChatRequest, pro
 		}
 	}
 	result.ToolCalls = toolAccum.All()
+	if toolMode == ToolModeEmulated {
+		result.Text, result.ToolCalls = parseEmulatedToolCalls(result.Text)
+		if len(result.ToolCalls) > 0 {
+			if !emitted && req.OnFirstDelta != nil {
+				req.OnFirstDelta()
+				emitted = true
+			}
+			for i, call := range result.ToolCalls {
+				if req.OnToolCallDelta != nil {
+					if err := req.OnToolCallDelta(i, call); err != nil {
+						return nil, err
+					}
+				}
+			}
+		} else if result.Text != "" && req.OnDelta != nil {
+			if !emitted && req.OnFirstDelta != nil {
+				req.OnFirstDelta()
+				emitted = true
+			}
+			if err := req.OnDelta(result.Text); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if len(result.ToolCalls) > 0 {
 		result.FinishReason = "tool_calls"
 	}
@@ -1199,6 +1247,101 @@ func flattenMessages(messages []windsurf.ChatMessage) string {
 	return tb.latestUserPrompt()
 }
 
+func ToolModeForRequest(model *models.Model, tools []ToolDefinition, choice *ToolChoice, messages []windsurf.ChatMessage) ToolMode {
+	if len(tools) == 0 {
+		return ToolModeNone
+	}
+	if choice != nil && strings.EqualFold(strings.TrimSpace(choice.OptionName), "none") {
+		return ToolModeNone
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("WINDSURFAPI_DIRECT_TOOL_MODE")), "emulated") {
+		return ToolModeEmulated
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("WINDSURFAPI_DIRECT_TOOL_MODE")), "native") {
+		return ToolModeNative
+	}
+	if model != nil && isOpus47ModelID(model.ID) {
+		return ToolModeEmulated
+	}
+	return ToolModeNative
+}
+
+func isOpus47ModelID(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	return strings.HasPrefix(id, "claude-opus-4-7")
+}
+
+func BuildEmulatedToolPrompt(messages []windsurf.ChatMessage, tools []ToolDefinition, choice *ToolChoice) string {
+	prompt := flattenMessages(messages)
+	if len(tools) == 0 {
+		return prompt
+	}
+	var parts []string
+	parts = append(parts, emulatedToolInstructions(tools, choice))
+	if prompt != "" {
+		parts = append(parts, prompt)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func emulatedToolInstructions(tools []ToolDefinition, choice *ToolChoice) string {
+	var b strings.Builder
+	b.WriteString("You have access to external function tools through the API client.\n")
+	b.WriteString("When you need a tool, do not answer in prose. Output exactly one tool call block and nothing else:\n")
+	b.WriteString("<tool_call>{\"name\":\"tool_name\",\"arguments\":{...}}</tool_call>\n")
+	b.WriteString("Use valid compact JSON. The arguments value must be a JSON object matching the chosen tool schema.\n")
+	b.WriteString("After the client returns tool results in later messages, use those results to answer and do not repeat a completed tool_call id.\n")
+	switch toolChoiceMode(choice) {
+	case "required":
+		b.WriteString("For this turn you must call one tool instead of answering directly.\n")
+	case "none":
+		b.WriteString("For this turn you must not call tools; answer directly.\n")
+	}
+	if choice != nil && strings.TrimSpace(choice.ToolName) != "" {
+		b.WriteString("For this turn you must call the function ")
+		b.WriteString(strconv.Quote(sanitize.Text(choice.ToolName)))
+		b.WriteString(" and no other function.\n")
+	}
+	b.WriteString("\nAvailable tools:\n")
+	for _, tool := range tools {
+		name := sanitize.Text(tool.Name)
+		if name == "" {
+			continue
+		}
+		b.WriteString("- ")
+		b.WriteString(name)
+		if desc := strings.TrimSpace(sanitize.Text(tool.Description)); desc != "" {
+			b.WriteString(": ")
+			b.WriteString(desc)
+		}
+		schema := strings.TrimSpace(sanitize.Text(tool.SchemaJSON))
+		if schema == "" {
+			schema = `{"type":"object"}`
+		}
+		b.WriteString("\n  parameters: ")
+		b.WriteString(schema)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func toolChoiceMode(choice *ToolChoice) string {
+	if choice == nil {
+		return "auto"
+	}
+	if strings.TrimSpace(choice.ToolName) != "" {
+		return "required"
+	}
+	switch strings.ToLower(strings.TrimSpace(choice.OptionName)) {
+	case "required", "any":
+		return "required"
+	case "none":
+		return "none"
+	default:
+		return "auto"
+	}
+}
+
 type transcriptBuilder struct {
 	messages []windsurf.ChatMessage
 	system   []string
@@ -1415,6 +1558,149 @@ func sanitizeToolCalls(calls []windsurf.ToolCall) []windsurf.ToolCall {
 		out = append(out, sanitize.ToolCall(call))
 	}
 	return out
+}
+
+var (
+	toolCallBlockRE    = regexp.MustCompile(`(?is)<tool_call>\s*(\{.*?\})\s*</tool_call>`)
+	toolCallsSectionRE = regexp.MustCompile(`(?is)<tool_calls>\s*(\[.*?\])\s*</tool_calls>`)
+	toolCodeRE         = regexp.MustCompile(`(?is)<tool_code>\s*(\{.*?\})\s*</tool_code>`)
+)
+
+func parseEmulatedToolCalls(text string) (string, []windsurf.ToolCall) {
+	var calls []windsurf.ToolCall
+	cleaned := toolCallBlockRE.ReplaceAllStringFunc(text, func(match string) string {
+		sub := toolCallBlockRE.FindStringSubmatch(match)
+		if len(sub) != 2 {
+			return match
+		}
+		if call, ok := parseToolCallObject(sub[1]); ok {
+			calls = append(calls, call)
+			return ""
+		}
+		return match
+	})
+	cleaned = toolCodeRE.ReplaceAllStringFunc(cleaned, func(match string) string {
+		sub := toolCodeRE.FindStringSubmatch(match)
+		if len(sub) != 2 {
+			return match
+		}
+		if call, ok := parseToolCallObject(sub[1]); ok {
+			calls = append(calls, call)
+			return ""
+		}
+		return match
+	})
+	cleaned = toolCallsSectionRE.ReplaceAllStringFunc(cleaned, func(match string) string {
+		sub := toolCallsSectionRE.FindStringSubmatch(match)
+		if len(sub) != 2 {
+			return match
+		}
+		var items []any
+		if err := json.Unmarshal([]byte(sub[1]), &items); err != nil {
+			return match
+		}
+		added := 0
+		for _, item := range items {
+			raw, _ := json.Marshal(item)
+			if call, ok := parseToolCallObject(string(raw)); ok {
+				calls = append(calls, call)
+				added++
+			}
+		}
+		if added > 0 {
+			return ""
+		}
+		return match
+	})
+	if len(calls) == 0 {
+		if call, ok := parseBareJSONToolCall(cleaned); ok {
+			return "", []windsurf.ToolCall{call}
+		}
+	}
+	for i := range calls {
+		if strings.TrimSpace(calls[i].ID) == "" {
+			calls[i].ID = fmt.Sprintf("call_%d_%s", i, strconv.FormatInt(time.Now().UnixNano(), 36))
+		}
+		calls[i] = sanitize.ToolCall(calls[i])
+	}
+	return strings.TrimSpace(cleaned), calls
+}
+
+func parseBareJSONToolCall(text string) (windsurf.ToolCall, bool) {
+	text = strings.TrimSpace(strings.Trim(text, "`"))
+	if !strings.HasPrefix(text, "{") || !strings.HasSuffix(text, "}") {
+		return windsurf.ToolCall{}, false
+	}
+	return parseToolCallObject(text)
+}
+
+func parseToolCallObject(raw string) (windsurf.ToolCall, bool) {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &obj); err != nil {
+		return windsurf.ToolCall{}, false
+	}
+	if nested, ok := obj["function_call"].(map[string]any); ok {
+		obj = nested
+	} else if nested, ok := obj["tool_call"].(map[string]any); ok {
+		obj = nested
+	}
+	name := strings.TrimSpace(stringValue(obj["name"], ""))
+	if name == "" {
+		if fn, ok := obj["function"].(map[string]any); ok {
+			name = strings.TrimSpace(stringValue(fn["name"], ""))
+			if obj["arguments"] == nil {
+				obj["arguments"] = fn["arguments"]
+			}
+		}
+	}
+	if name == "" {
+		return windsurf.ToolCall{}, false
+	}
+	args := normalizeToolArgumentsJSON(obj["arguments"])
+	if args == "" {
+		args = "{}"
+	}
+	return windsurf.ToolCall{
+		ID:            strings.TrimSpace(stringValue(firstNonNil(obj["id"], obj["call_id"]), "")),
+		Name:          name,
+		ArgumentsJSON: args,
+	}, true
+}
+
+func normalizeToolArgumentsJSON(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "{}"
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return "{}"
+		}
+		var parsed any
+		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
+			return marshalCompactJSON(parsed)
+		}
+		return marshalCompactJSON(map[string]any{"input": s})
+	default:
+		return marshalCompactJSON(x)
+	}
+}
+
+func marshalCompactJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil || len(raw) == 0 {
+		return "{}"
+	}
+	return string(raw)
+}
+
+func firstNonNil(values ...any) any {
+	for _, v := range values {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
 }
 
 func metadataJSON(apiKey string) map[string]any {

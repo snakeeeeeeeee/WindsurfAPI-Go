@@ -97,6 +97,31 @@ func TestReserveFiltersBlockedModel(t *testing.T) {
 	}
 }
 
+func TestReserveFiltersLowCapabilityAccountForPremiumClaude(t *testing.T) {
+	mgr := testManager(t)
+	idLow, _ := mgr.AddAccount("free-like@example.com", "tok-a", "u1", "", "")
+	idHigh, _ := mgr.AddAccount("trial-like@example.com", "tok-b", "u2", "", "")
+	if err := mgr.UpdateAccount(int(idLow), map[string]interface{}{"model_config_count": 73, "quota_daily_percent": 100, "quota_weekly_percent": 100}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.UpdateAccount(int(idHigh), map[string]interface{}{"model_config_count": 115, "quota_daily_percent": 90, "quota_weekly_percent": 90}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := mgr.Reserve(context.Background(), "claude-opus-4-7-xhigh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Release(res)
+	if res.Account.ID != int(idHigh) {
+		t.Fatalf("reserved account %d, want high capability account %d", res.Account.ID, idHigh)
+	}
+
+	if _, err := mgr.ReserveFrom(context.Background(), "claude-sonnet-4.6", []int{int(idLow)}, nil); err == nil {
+		t.Fatal("expected low capability account to be unavailable for premium Claude model")
+	}
+}
+
 func TestReserveFromLimitsCandidateSet(t *testing.T) {
 	mgr := testManager(t)
 	id1, _ := mgr.AddAccount("first@example.com", "tok-a", "u1", "", "")
@@ -443,6 +468,9 @@ func TestUpdateHealthPersistsQuotaAndRateLimit(t *testing.T) {
 	}
 	if acc.Tier != "trial" && acc.Tier != "free" {
 		t.Fatalf("tier=%q", acc.Tier)
+	}
+	if acc.ModelConfigCount != 0 {
+		t.Fatalf("model config count=%d", acc.ModelConfigCount)
 	}
 	if acc.QuotaDailyPercent == nil || *acc.QuotaDailyPercent != daily {
 		t.Fatalf("daily=%v", acc.QuotaDailyPercent)

@@ -980,7 +980,9 @@ func dashboardRefreshOneAccount(ctx context.Context, am *account.Manager, dc das
 		retryUntil = &until
 	}
 	note := fmt.Sprintf("dashboard refresh plan=%s checked_at=%s", status.PlanName, time.Now().Format(time.RFC3339))
-	if err := am.UpdateHealthDetails(acc.ID, health.AccountHealthUpdate(health.TierFromPlan(status.PlanName), status, retryUntil, note)); err != nil {
+	update := health.AccountHealthUpdate(health.TierFromPlan(status.PlanName), status, retryUntil, note)
+	update.ModelConfigCount = configCount
+	if err := am.UpdateHealthDetails(acc.ID, update); err != nil {
 		return map[string]any{"success": false, "account_id": acc.ID, "email": acc.Email, "error": redact.Text(err.Error()), "stage": "update_health", "elapsed_ms": time.Since(start).Milliseconds()}
 	}
 	return map[string]any{
@@ -2903,6 +2905,7 @@ func safeAccount(acc *account.Account) map[string]any {
 		"proxy_url_set":         strings.TrimSpace(acc.ProxyURL) != "",
 		"tier":                  acc.Tier,
 		"plan_name":             acc.PlanName,
+		"model_config_count":    acc.ModelConfigCount,
 		"rate_limited_until":    acc.RateLimitedUntil,
 		"quota_daily_percent":   acc.QuotaDailyPercent,
 		"quota_weekly_percent":  acc.QuotaWeeklyPercent,

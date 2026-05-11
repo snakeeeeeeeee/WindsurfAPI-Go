@@ -107,7 +107,7 @@ func (w *Worker) runOnce(ctx context.Context) {
 		}
 		summary.Checked++
 		checkCtx, cancel := context.WithTimeout(ctx, w.cfg.Timeout)
-		status, retryUntil, err := w.checkOne(checkCtx, &a)
+		status, retryUntil, modelConfigCount, err := w.checkOne(checkCtx, &a)
 		cancel()
 		if err != nil {
 			if isInvalidToken(err) {
@@ -127,7 +127,9 @@ func (w *Worker) runOnce(ctx context.Context) {
 		summary.OK++
 		tier := TierFromPlan(status.PlanName)
 		note := fmt.Sprintf("health ok model=%s checked_at=%s", w.cfg.Model, time.Now().Format(time.RFC3339))
-		if err := w.am.UpdateHealthDetails(a.ID, AccountHealthUpdate(tier, status, retryUntil, note)); err != nil {
+		update := AccountHealthUpdate(tier, status, retryUntil, note)
+		update.ModelConfigCount = modelConfigCount
+		if err := w.am.UpdateHealthDetails(a.ID, update); err != nil {
 			summary.Failed++
 			summary.LastError = redact.Text(err.Error())
 			log.Printf("health account=%d update_error=%s", a.ID, redact.Text(err.Error()))
@@ -155,27 +157,30 @@ func (w *Worker) runProxyMaintenance(ctx context.Context, accounts []account.Acc
 	}
 }
 
-func (w *Worker) checkOne(ctx context.Context, a *account.Account) (*direct.UserStatus, *time.Time, error) {
+func (w *Worker) checkOne(ctx context.Context, a *account.Account) (*direct.UserStatus, *time.Time, int, error) {
 	proxyURL := w.effectiveProxy(a)
 	status, err := w.dc.GetUserStatusWithProxy(ctx, a.FirebaseToken, proxyURL)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	rl, err := w.dc.CheckMessageRateLimitWithProxy(ctx, a.FirebaseToken, proxyURL)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	var retryUntil *time.Time
 	if !rl.HasCapacity && rl.RetryAfterMS != nil && *rl.RetryAfterMS > 0 {
 		until := time.Now().Add(time.Duration(*rl.RetryAfterMS) * time.Millisecond)
 		retryUntil = &until
 	}
+	modelConfigCount := 0
 	if w.cfg.CheckModelConfigs {
-		if _, err := w.dc.GetCascadeModelConfigsWithProxy(ctx, a.FirebaseToken, proxyURL); err != nil {
-			return nil, nil, err
+		cfgs, err := w.dc.GetCascadeModelConfigsWithProxy(ctx, a.FirebaseToken, proxyURL)
+		if err != nil {
+			return nil, nil, 0, err
 		}
+		modelConfigCount = len(cfgs.Configs)
 	}
-	return status, retryUntil, nil
+	return status, retryUntil, modelConfigCount, nil
 }
 
 func (w *Worker) effectiveProxy(a *account.Account) string {
