@@ -17,6 +17,7 @@ import (
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
 	"github.com/zhangyu/windsurfapi-go/internal/sse"
 	"github.com/zhangyu/windsurfapi-go/internal/store"
+	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf/direct"
 )
@@ -214,7 +215,7 @@ func TestExecuteOpenAIChatPassesReasoningPrompt(t *testing.T) {
 	_, _ = am.AddAccount("first@example.com", "tok-a", "u1", "", "")
 	fake := &fakeDirectChatClient{}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	result, status, err := executeOpenAIChat(req, fake, am, nil, models.GetModelByID("claude-sonnet-4.6"), []windsurf.ChatMessage{{Role: "user", Content: "hi"}}, "caller-reasoning", false, httptest.NewRecorder(), nil, nil, nil, false, nil, "think harder")
+	result, status, err := executeOpenAIChat(req, fake, am, nil, models.GetModelByID("claude-sonnet-4.6"), "claude-sonnet-4.6", []windsurf.ChatMessage{{Role: "user", Content: "hi"}}, "caller-reasoning", false, httptest.NewRecorder(), nil, nil, nil, false, nil, nil, "think harder", 0)
 	if err != nil || status != http.StatusOK || result.Text != "ok" {
 		t.Fatalf("result=%+v status=%d err=%v", result, status, err)
 	}
@@ -270,8 +271,8 @@ func TestChatHandlerKeepsOpus47ModelForToolRequests(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("response json: %v", err)
 	}
-	if resp["model"] != "claude-opus-4-7-xhigh" {
-		t.Fatalf("response model should preserve requested routing model, got=%v", resp["model"])
+	if resp["model"] != "claude-opus-4-7" {
+		t.Fatalf("response model should preserve requested public model, got=%v", resp["model"])
 	}
 }
 
@@ -646,18 +647,16 @@ func TestWriteUnaryResponseSanitizesWorkspacePaths(t *testing.T) {
 	}
 }
 
-func TestUsageMapIncludesCacheReadAndCreation(t *testing.T) {
-	got := usageMap(&windsurf.Usage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, CacheWriteTokens: 10})
-	if got["cache_read_input_tokens"] != uint64(40) || got["cache_creation_input_tokens"] != uint64(10) {
-		t.Fatalf("usage=%v", got)
+func TestUsageMapDoesNotExposeUnverifiedCacheFields(t *testing.T) {
+	got := usageMap(usagepkg.FromUpstream(&windsurf.Usage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, CacheWriteTokens: 10}, 0))
+	if got["prompt_tokens"] != uint64(100) || got["completion_tokens"] != uint64(20) || got["total_tokens"] != uint64(120) {
+		t.Fatalf("base usage=%v", got)
 	}
-	details := got["prompt_tokens_details"].(map[string]any)
-	if details["cached_tokens"] != uint64(40) {
-		t.Fatalf("details=%v", details)
+	if _, ok := got["cache_read_input_tokens"]; ok {
+		t.Fatalf("cache read should not be exposed by default: %v", got)
 	}
-	creation := got["cache_creation"].(map[string]any)
-	if creation["ephemeral_5m_input_tokens"] != uint64(10) {
-		t.Fatalf("creation=%v", creation)
+	if _, ok := got["cache_creation_input_tokens"]; ok {
+		t.Fatalf("cache creation should not be exposed by default: %v", got)
 	}
 }
 

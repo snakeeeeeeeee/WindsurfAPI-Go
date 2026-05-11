@@ -49,6 +49,7 @@ func TestPatchUpdatesMutableRuntimeConfig(t *testing.T) {
 		Direct:    &DirectView{Hosts: []string{" one ", "two"}, TimeoutSeconds: 45, NativeChatPrompts: true},
 		Health:    &HealthView{Enabled: false, IntervalSeconds: 60, TimeoutSeconds: 10, Model: "claude-opus-4.6"},
 		Scheduler: &SchedulerView{RedisEnabled: true, RedisFailClosed: true, MaxInflightPerAccount: 8, ReservationTTLSeconds: 90},
+		Usage:     &UsageView{VirtualCache: VirtualCacheView{Enabled: true, Mode: "dynamic", DefaultTTL: "1h", UncachedInputTokens: 80, MinInputTokens: 2, MaxInputTokens: 5000, WarmupTokens: 100, MinCreationTokens: 5, MaxCreationTokens: 9000, CreationJitterRatio: 0.2, BurstEveryTurns: 4, BurstMinTokens: 50, BurstMaxTokens: 100}},
 		Proxy:     &ProxyView{Default: " http://proxy.local:8080 ", Dynamic: []string{" http://proxy-a:8080 "}, RotateOnError: true, TestURL: "https://example.test/", CooldownSeconds: 90, AllowPrivate: true, Provider: "novproxy", Protocol: "http", Host: "proxy.vendor.test", Port: 1000, UsernameTemplate: "user-{region}-{state}-{sid}-{ttl}", Password: "proxy-secret", Region: "US", State: "New Jersey", TTLMinutes: 60},
 		Log:       &LogView{Level: "DEBUG"},
 		Secrets:   &SecretsPatch{APIKeys: []string{" sk-new ", "sk-next"}, DashboardPassword: " dash-new ", RedisPassword: "redis-new"},
@@ -61,6 +62,9 @@ func TestPatchUpdatesMutableRuntimeConfig(t *testing.T) {
 	}
 	if !snap.Direct.NativeChatPrompts || !cfg.Direct.NativeChatPrompts {
 		t.Fatalf("native prompts not patched snap=%+v cfg=%+v", snap.Direct, cfg.Direct)
+	}
+	if !snap.Usage.VirtualCache.Enabled || snap.Usage.VirtualCache.Mode != "dynamic" || cfg.Usage.VirtualCache.DefaultTTL != "1h" || cfg.Usage.VirtualCache.UncachedInputTokens != 80 {
+		t.Fatalf("usage not patched snap=%+v cfg=%+v", snap.Usage, cfg.Usage)
 	}
 	if cfg.Proxy.Default != "http://proxy.local:8080" || len(cfg.Proxy.Dynamic) != 1 || cfg.Proxy.Dynamic[0] != "http://proxy-a:8080" || cfg.Proxy.TestURL != "https://example.test/" || cfg.Proxy.CooldownSeconds != 90 || !cfg.Proxy.AllowPrivate || cfg.Log.Level != "debug" {
 		t.Fatalf("cfg=%+v", cfg)
@@ -83,6 +87,9 @@ func TestPatchRejectsInvalidValues(t *testing.T) {
 	}
 	if _, err := mgr.Patch(Patch{Secrets: &SecretsPatch{APIKeys: []string{" ", ""}}}); err == nil {
 		t.Fatal("expected api keys error")
+	}
+	if _, err := mgr.Patch(Patch{Usage: &UsageView{VirtualCache: VirtualCacheView{Enabled: true, Mode: "bad", DefaultTTL: "5m", UncachedInputTokens: 1, MinInputTokens: 1, MaxInputTokens: 2}}}); err == nil {
+		t.Fatal("expected virtual cache mode error")
 	}
 }
 

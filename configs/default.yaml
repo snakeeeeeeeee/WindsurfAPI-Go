@@ -52,6 +52,24 @@ scheduler:
   max_inflight_per_account: 4
   reservation_ttl_seconds: 180
 
+usage:
+  virtual_cache:
+    # 本地虚拟 cache 账单，仅用于自用的 Anthropic/OpenAI-compatible usage 展示。
+    # 这不是 Windsurf/Anthropic 上游真实计费字段；外部检测场景建议保持关闭。
+    enabled: false
+    mode: "conservative"  # conservative 或 dynamic
+    default_ttl: "5m"     # 5m 或 1h
+    uncached_input_tokens: 64
+    min_input_tokens: 1
+    max_input_tokens: 4096
+    warmup_tokens: 0
+    min_creation_tokens: 0
+    max_creation_tokens: 8192
+    creation_jitter_ratio: 0
+    burst_every_turns: 0
+    burst_min_tokens: 0
+    burst_max_tokens: 0
+
 dashboard:
   enabled: true
   port: 3457

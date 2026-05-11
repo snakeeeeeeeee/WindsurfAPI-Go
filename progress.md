@@ -670,3 +670,19 @@
 - Extended Settings so dynamic binding, auto-bind-new-accounts, renew-before, bind retries, worker interval/batch/concurrency are configurable from the Dashboard.
 - Added backend tests for dynamic binding priority over static account proxy, expired binding fallback, failure marking, worker-plan priority, worker concurrency, Dashboard binding APIs, and Node-compatible dynamic-proxy batch routes.
 - Verification passed: `go test ./internal/proxy ./internal/account ./internal/handler -count=1`, `npm run build` in `web/dashboard`, and final `go test ./...`.
+
+## 2026-05-12 cctest model/usage normalization
+- Investigated cctest's `claude-opus-4-7 -> claude-opus-4-7-medium` and abnormal cache usage report.
+- Compared the sibling `kiro.rs` cache implementation and confirmed its `VirtualCacheUsageManager` is a local virtual usage ledger, not a reliable upstream billing/cache source for external verification.
+- Updated public response behavior so `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` keep internal Windsurf effort routing private while responding with the client-requested public model ID.
+- Changed OpenAI usage output to only include conservative base fields: `prompt_tokens`, `completion_tokens`, and `total_tokens`. It no longer exposes unverified cache read/creation fields by default.
+- Changed Anthropic usage output to use upstream input tokens when present, otherwise a conservative local estimate, and to zero out cache read/creation fields by default rather than mapping Windsurf/internal cache stats to official Anthropic billing fields.
+- Added a fallback input-token estimate to Responses streaming `response.completed` usage.
+- Added/updated tests for public model echo and conservative cache usage across OpenAI, Anthropic Messages, and Responses.
+
+## 2026-05-12 configurable virtual cache billing
+- Added `internal/usage.VirtualCacheUsageManager`, modeled after the sibling `kiro.rs` virtual ledger but scoped to Go's account/model/caller/route isolation.
+- Added `usage.virtual_cache` YAML/env/runtime config. It is off by default and supports conservative/dynamic modes, 5m/1h TTL, uncached input sizing, creation min/max, jitter, and burst knobs.
+- Wired virtual usage into `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` so one successful upstream request computes one response usage view; account scheduling and upstream health still use raw upstream usage.
+- Runtime Dashboard config can now toggle and tune virtual cache billing without restarting; applying config updates the in-memory virtual ledger manager.
+- Dashboard Settings now exposes the main virtual cache controls in Chinese.

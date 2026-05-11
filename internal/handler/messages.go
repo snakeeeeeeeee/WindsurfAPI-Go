@@ -16,6 +16,7 @@ import (
 	"github.com/zhangyu/windsurfapi-go/internal/redact"
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
 	"github.com/zhangyu/windsurfapi-go/internal/sanitize"
+	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf/direct"
 )
@@ -74,6 +75,7 @@ type anthropicStreamWriter struct {
 	flusher         http.Flusher
 	id              string
 	model           string
+	usage           usagepkg.Usage
 	started         bool
 	thinkingStarted bool
 	blockType       string
@@ -82,10 +84,18 @@ type anthropicStreamWriter struct {
 	closed          bool
 }
 
-func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...*proxypool.Manager) http.HandlerFunc {
+func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...any) http.HandlerFunc {
 	var proxyPool *proxypool.Manager
+	var usageMgr *usagepkg.Manager
 	if len(pp) > 0 {
-		proxyPool = pp[0]
+		for _, item := range pp {
+			switch v := item.(type) {
+			case *proxypool.Manager:
+				proxyPool = v
+			case *usagepkg.Manager:
+				usageMgr = v
+			}
+		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		setNoStore(w)
@@ -116,7 +126,8 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 			writeAnthropicTypedError(w, http.StatusForbidden, "model blocked: "+reason, "model_blocked")
 			return
 		}
-		setAnthropicHeaders(w, model.ID)
+		displayModelID := responseModelID(req.Model, model)
+		setAnthropicHeaders(w, displayModelID)
 
 		msgs, err := anthropicToWindsurfMessages(req)
 		if err != nil {
@@ -142,6 +153,7 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 			tools = nil
 			choice = nil
 		}
+		inputTokenEstimate := estimateInputTokens(msgs, tools)
 		thinking, err := anthropicThinkingConfigFromRequest(req.Thinking)
 		if err != nil {
 			writeAnthropicError(w, http.StatusBadRequest, err.Error())
@@ -150,19 +162,24 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 		thinking = mergeAnthropicOutputConfigEffort(thinking, req.OutputConfig)
 
 		var stream *anthropicStreamWriter
+		var responseUsage usagepkg.Usage
 		params := directChatParams{
-			Model:          model,
-			Messages:       msgs,
-			CallerKey:      callerKeyForBody(r, req),
-			Route:          "messages",
-			Stream:         req.Stream,
-			HTTPWriter:     w,
-			ProxyPool:      proxyPool,
-			ReuseTTL:       cachePolicy.ReuseTTL(),
-			Thinking:       anthropicThinkingPrompt(thinking),
-			Tools:          tools,
-			ToolChoice:     choice,
-			TestAccountIDs: testAccountIDsFromRequest(r),
+			Model:              model,
+			DisplayModelID:     displayModelID,
+			Messages:           msgs,
+			CallerKey:          callerKeyForBody(r, req),
+			Route:              "messages",
+			Stream:             req.Stream,
+			HTTPWriter:         w,
+			ProxyPool:          proxyPool,
+			ReuseTTL:           cachePolicy.ReuseTTL(),
+			Thinking:           anthropicThinkingPrompt(thinking),
+			Tools:              tools,
+			ToolChoice:         choice,
+			TestAccountIDs:     testAccountIDsFromRequest(r),
+			InputTokenEstimate: inputTokenEstimate,
+			VirtualUsage:       usageMgr,
+			UsageOut:           &responseUsage,
 			StrictReuse: func() bool {
 				if req.StrictReuse != nil {
 					return *req.StrictReuse
@@ -173,7 +190,7 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 		if req.Stream {
 			params.OnStreamStart = func() error {
 				var err error
-				stream, err = newAnthropicStreamWriter(w, model.ID)
+				stream, err = newAnthropicStreamWriter(w, displayModelID, inputTokenEstimate)
 				return err
 			}
 			params.OnTextDelta = func(delta string) error {
@@ -194,12 +211,12 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 			params.OnStreamFinish = func(result *windsurf.ChatResult) error {
 				if stream == nil {
 					var err error
-					stream, err = newAnthropicStreamWriter(w, model.ID)
+					stream, err = newAnthropicStreamWriter(w, displayModelID, inputTokenEstimate)
 					if err != nil {
 						return err
 					}
 				}
-				cachePolicy.ApplyUsageSplit(result.Usage)
+				stream.usage = responseUsage
 				return stream.Finish(result)
 			}
 		}
@@ -209,11 +226,10 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 			writeAnthropicError(w, status, err.Error())
 			return
 		}
-		cachePolicy.ApplyUsageSplit(result.Usage)
 		if req.Stream {
 			return
 		}
-		writeMessagesResponse(w, model.ID, result)
+		writeMessagesResponse(w, displayModelID, result, responseUsage)
 	}
 }
 
@@ -775,8 +791,9 @@ func isCompactionRequest(messages []windsurf.ChatMessage) bool {
 		strings.Contains(last, "summarize the conversation")
 }
 
-func writeMessagesResponse(w http.ResponseWriter, modelID string, result *windsurf.ChatResult) {
+func writeMessagesResponse(w http.ResponseWriter, modelID string, result *windsurf.ChatResult, values ...any) {
 	result = sanitizeChatResult(result)
+	responseUsage := messagesUsageFromArgs(result, values...)
 	stopReason := "end_turn"
 	content := []any{}
 	if strings.TrimSpace(result.Thinking) != "" {
@@ -798,7 +815,7 @@ func writeMessagesResponse(w http.ResponseWriter, modelID string, result *windsu
 		"content":       content,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
-		"usage":         anthropicUsage(result.Usage),
+		"usage":         anthropicUsage(responseUsage),
 	}
 	setNoStore(w)
 	w.Header().Set("Content-Type", "application/json")
@@ -816,27 +833,28 @@ func anthropicToolUseBlock(call windsurf.ToolCall) map[string]any {
 	return map[string]any{"type": "tool_use", "id": call.ID, "name": call.Name, "input": input}
 }
 
-func anthropicUsage(u *windsurf.Usage) map[string]any {
-	if u == nil {
-		return map[string]any{
-			"input_tokens":                0,
-			"output_tokens":               0,
-			"cache_creation_input_tokens": 0,
-			"cache_read_input_tokens":     0,
-			"cache_creation":              map[string]any{"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+func anthropicUsage(u usagepkg.Usage) map[string]any {
+	return usagepkg.AnthropicMap(u)
+}
+
+func messagesUsageFromArgs(result *windsurf.ChatResult, values ...any) usagepkg.Usage {
+	var responseUsage *usagepkg.Usage
+	var fallback uint64
+	for _, value := range values {
+		switch v := value.(type) {
+		case usagepkg.Usage:
+			responseUsage = &v
+		case uint64:
+			fallback = v
 		}
 	}
-	cacheWrite5m, cacheWrite1h := cacheWriteSplit(u)
-	return map[string]any{
-		"input_tokens":                u.InputTokens,
-		"output_tokens":               u.OutputTokens,
-		"cache_creation_input_tokens": u.CacheWriteTokens,
-		"cache_read_input_tokens":     u.CacheReadTokens,
-		"cache_creation": map[string]any{
-			"ephemeral_5m_input_tokens": cacheWrite5m,
-			"ephemeral_1h_input_tokens": cacheWrite1h,
-		},
+	if responseUsage != nil {
+		return *responseUsage
 	}
+	if result == nil {
+		return usagepkg.FromUpstream(nil, fallback)
+	}
+	return usagepkg.FromUpstream(result.Usage, fallback)
 }
 
 func writeAnthropicError(w http.ResponseWriter, code int, msg string) {
@@ -860,7 +878,7 @@ func writeAnthropicTypedError(w http.ResponseWriter, code int, msg, typ string) 
 	})
 }
 
-func newAnthropicStreamWriter(w http.ResponseWriter, modelID string) (*anthropicStreamWriter, error) {
+func newAnthropicStreamWriter(w http.ResponseWriter, modelID string, inputTokenEstimate ...uint64) (*anthropicStreamWriter, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return nil, fmt.Errorf("response writer does not support flushing")
@@ -885,7 +903,7 @@ func newAnthropicStreamWriter(w http.ResponseWriter, modelID string) (*anthropic
 			"content":       []any{},
 			"stop_reason":   nil,
 			"stop_sequence": nil,
-			"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
+			"usage":         map[string]any{"input_tokens": firstUint64(inputTokenEstimate), "output_tokens": 0},
 		},
 	})
 	return s, nil
@@ -999,15 +1017,13 @@ func (s *anthropicStreamWriter) Finish(result *windsurf.ChatResult) error {
 			return err
 		}
 	}
-	usage := map[string]any{"output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation": map[string]any{"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}}
-	if result != nil && result.Usage != nil {
-		cacheWrite5m, cacheWrite1h := cacheWriteSplit(result.Usage)
-		usage["output_tokens"] = result.Usage.OutputTokens
-		usage["cache_creation_input_tokens"] = result.Usage.CacheWriteTokens
-		usage["cache_read_input_tokens"] = result.Usage.CacheReadTokens
-		usage["cache_creation"] = map[string]any{"ephemeral_5m_input_tokens": cacheWrite5m, "ephemeral_1h_input_tokens": cacheWrite1h}
+	streamUsage := s.usage
+	if !streamUsage.Virtual && streamUsage.InputTokens == 0 && streamUsage.OutputTokens == 0 && result != nil {
+		streamUsage = usagepkg.FromUpstream(result.Usage, 0)
 	}
-	if err := s.event("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": reason, "stop_sequence": nil}, "usage": usage}); err != nil {
+	usageDelta := usagepkg.AnthropicMap(streamUsage)
+	delete(usageDelta, "input_tokens")
+	if err := s.event("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": reason, "stop_sequence": nil}, "usage": usageDelta}); err != nil {
 		return err
 	}
 	if err := s.event("message_stop", map[string]any{"type": "message_stop"}); err != nil {

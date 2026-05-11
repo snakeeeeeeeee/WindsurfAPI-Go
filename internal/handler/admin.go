@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zhangyu/windsurfapi-go/internal/account"
+	"github.com/zhangyu/windsurfapi-go/internal/config"
 	"github.com/zhangyu/windsurfapi-go/internal/health"
 	"github.com/zhangyu/windsurfapi-go/internal/ls"
 	"github.com/zhangyu/windsurfapi-go/internal/modelaccess"
@@ -22,6 +23,7 @@ import (
 	"github.com/zhangyu/windsurfapi-go/internal/redact"
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
 	runtimeconfig "github.com/zhangyu/windsurfapi-go/internal/runtimeconfig"
+	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf/direct"
 )
@@ -278,10 +280,16 @@ func AuthModelAccessHandler(access *modelaccess.Manager) http.HandlerFunc {
 	}
 }
 
-func DashboardAPIHandler(am *account.Manager, access *modelaccess.Manager, rc *runtimeconfig.Manager, dc dashboardDirectClient, rp *reusepool.Pool, pool *ls.Pool, pp ...*proxypool.Manager) http.HandlerFunc {
+func DashboardAPIHandler(am *account.Manager, access *modelaccess.Manager, rc *runtimeconfig.Manager, dc dashboardDirectClient, rp *reusepool.Pool, pool *ls.Pool, extras ...any) http.HandlerFunc {
 	var proxyPool *proxypool.Manager
-	if len(pp) > 0 {
-		proxyPool = pp[0]
+	var usageMgr *usagepkg.Manager
+	for _, item := range extras {
+		switch v := item.(type) {
+		case *proxypool.Manager:
+			proxyPool = v
+		case *usagepkg.Manager:
+			usageMgr = v
+		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		subpath := strings.TrimPrefix(r.URL.Path, "/dashboard/api")
@@ -313,7 +321,7 @@ func DashboardAPIHandler(am *account.Manager, access *modelaccess.Manager, rc *r
 			return
 		}
 		if subpath == "/config" {
-			dashboardConfigAPI(w, r, rc, proxyPool)
+			dashboardConfigAPI(w, r, rc, proxyPool, usageMgr)
 			return
 		}
 		if subpath == "/availability/config" {
@@ -2377,14 +2385,20 @@ type cacheEntryView struct {
 	ExpiresAt     time.Time `json:"expires_at"`
 }
 
-func dashboardConfigAPI(w http.ResponseWriter, r *http.Request, rc *runtimeconfig.Manager, pools ...*proxypool.Manager) {
+func dashboardConfigAPI(w http.ResponseWriter, r *http.Request, rc *runtimeconfig.Manager, extras ...any) {
 	if rc == nil {
 		writeJSONError(w, http.StatusNotFound, "runtime config unavailable")
 		return
 	}
 	var proxyPool *proxypool.Manager
-	if len(pools) > 0 {
-		proxyPool = pools[0]
+	var usageMgr *usagepkg.Manager
+	for _, item := range extras {
+		switch v := item.(type) {
+		case *proxypool.Manager:
+			proxyPool = v
+		case *usagepkg.Manager:
+			usageMgr = v
+		}
 	}
 	switch r.Method {
 	case http.MethodGet:
@@ -2415,9 +2429,30 @@ func dashboardConfigAPI(w http.ResponseWriter, r *http.Request, rc *runtimeconfi
 		if patch.Proxy != nil {
 			reconfigureProxyManagerFromView(proxyPool, snap.Proxy)
 		}
+		if patch.Usage != nil && usageMgr != nil {
+			usageMgr.SetConfig(configFromVirtualCacheView(snap.Usage.VirtualCache))
+		}
 		writeJSON(w, http.StatusOK, snap)
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func configFromVirtualCacheView(view runtimeconfig.VirtualCacheView) config.VirtualCacheUsageConfig {
+	return config.VirtualCacheUsageConfig{
+		Enabled:             view.Enabled,
+		Mode:                view.Mode,
+		DefaultTTL:          view.DefaultTTL,
+		UncachedInputTokens: view.UncachedInputTokens,
+		MinInputTokens:      view.MinInputTokens,
+		MaxInputTokens:      view.MaxInputTokens,
+		WarmupTokens:        view.WarmupTokens,
+		MinCreationTokens:   view.MinCreationTokens,
+		MaxCreationTokens:   view.MaxCreationTokens,
+		CreationJitterRatio: view.CreationJitterRatio,
+		BurstEveryTurns:     view.BurstEveryTurns,
+		BurstMinTokens:      view.BurstMinTokens,
+		BurstMaxTokens:      view.BurstMaxTokens,
 	}
 }
 

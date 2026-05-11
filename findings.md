@@ -107,3 +107,10 @@
 - Proxy identity changes must purge account availability state. Without this, a new session/IP can inherit old cooldowns, model breakers, and recent transport failures from the previous IP, reducing availability and confusing operators.
 - The maintenance worker should be bounded by `worker_concurrency`; sequential renewal is too slow for many expiring bindings, while unbounded renewal can stampede the proxy provider.
 - Local `httptest` proxy verification is blocked by SSRF protection unless `allow_private` is explicitly true. Tests use that escape hatch; production defaults remain private-host safe.
+
+## 2026-05-12 cctest model/usage audit
+- cctest reporting `claude-opus-4-7 -> claude-opus-4-7-medium` was caused by leaking the internal Windsurf effort route/model ID into public response fields. The correct protocol behavior is: route internally to Windsurf's concrete UID/effort variant, but echo the client-requested public model in OpenAI/Anthropic/Responses responses and headers.
+- `kiro.rs/src/anthropic/usage.rs` implements a `VirtualCacheUsageManager`. That is a local virtual cache ledger for Anthropic-compatible client display, not a verified upstream billing/cache signal. Feeding those fields to external detectors can produce huge `cache_creation_input_tokens`, zero cache reads, and abnormal multiplier reports.
+- Go already parses Windsurf upstream `CacheReadTokens`/`CacheWriteTokens` for internal stats and scheduler/account accounting. Public API responses should not expose them as Anthropic/OpenAI official cache fields by default, because the semantics are not proven equivalent.
+- Anthropic stream `message_start` and Responses stream `response.completed` need a conservative input-token fallback when upstream reports zero. This is not real billing proof; it just avoids structurally impossible `input_tokens=0` for non-empty requests.
+- Virtual cache billing is useful for local/self-owned accounting, but it should remain a runtime/configured policy. It must not mutate scheduler health/account quota logic or upstream request retries, otherwise local display choices could change availability behavior.

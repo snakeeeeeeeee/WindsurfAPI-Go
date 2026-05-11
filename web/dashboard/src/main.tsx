@@ -359,6 +359,23 @@ type RuntimeConfigSnapshot = {
     model?: string;
   };
   scheduler?: { redis_enabled?: boolean; redis_fail_closed?: boolean; max_inflight_per_account?: number; reservation_ttl_seconds?: number };
+  usage?: {
+    virtual_cache?: {
+      enabled?: boolean;
+      mode?: string;
+      default_ttl?: string;
+      uncached_input_tokens?: number;
+      min_input_tokens?: number;
+      max_input_tokens?: number;
+      warmup_tokens?: number;
+      min_creation_tokens?: number;
+      max_creation_tokens?: number;
+      creation_jitter_ratio?: number;
+      burst_every_turns?: number;
+      burst_min_tokens?: number;
+      burst_max_tokens?: number;
+    };
+  };
   dashboard?: { enabled?: boolean; port?: number; password_set?: boolean };
   proxy?: {
     default?: string;
@@ -2888,6 +2905,8 @@ function SettingsPanel({
   const server = draft.server ?? {};
   const health = draft.health ?? {};
   const scheduler = draft.scheduler ?? {};
+  const usage = draft.usage ?? {};
+  const virtualCache = usage.virtual_cache ?? {};
   const proxy = draft.proxy ?? {};
   const log = draft.log ?? {};
   const secrets = draft.secrets ?? {};
@@ -2936,6 +2955,55 @@ function SettingsPanel({
             type="number"
             value={scheduler.reservation_ttl_seconds ?? 180}
             onChange={(event) => setDraft({ ...draft, scheduler: { ...scheduler, reservation_ttl_seconds: Number(event.target.value) } })}
+          />
+        </Field>
+        <Field label="虚拟 cache 模式">
+          <Select
+            value={virtualCache.mode ?? "conservative"}
+            onChange={(event) => setDraft({ ...draft, usage: { ...usage, virtual_cache: { ...virtualCache, mode: event.target.value } } })}
+          >
+            <option value="conservative">conservative</option>
+            <option value="dynamic">dynamic</option>
+          </Select>
+        </Field>
+        <Field label="虚拟 cache TTL">
+          <Select
+            value={virtualCache.default_ttl ?? "5m"}
+            onChange={(event) => setDraft({ ...draft, usage: { ...usage, virtual_cache: { ...virtualCache, default_ttl: event.target.value } } })}
+          >
+            <option value="5m">5m</option>
+            <option value="1h">1h</option>
+          </Select>
+        </Field>
+        <Field label="未缓存输入 tokens">
+          <Input
+            type="number"
+            value={virtualCache.uncached_input_tokens ?? 64}
+            onChange={(event) => setDraft({ ...draft, usage: { ...usage, virtual_cache: { ...virtualCache, uncached_input_tokens: Number(event.target.value) } } })}
+          />
+        </Field>
+        <Field label="虚拟输入上下限">
+          <Input
+            value={`${virtualCache.min_input_tokens ?? 1},${virtualCache.max_input_tokens ?? 4096}`}
+            onChange={(event) => {
+              const [min, max] = parseNumberPair(event.target.value);
+              setDraft({ ...draft, usage: { ...usage, virtual_cache: { ...virtualCache, min_input_tokens: min || 1, max_input_tokens: max || 4096 } } });
+            }}
+          />
+        </Field>
+        <Field label="创建 tokens 上限">
+          <Input
+            type="number"
+            value={virtualCache.max_creation_tokens ?? 8192}
+            onChange={(event) => setDraft({ ...draft, usage: { ...usage, virtual_cache: { ...virtualCache, max_creation_tokens: Number(event.target.value) } } })}
+          />
+        </Field>
+        <Field label="创建 jitter">
+          <Input
+            type="number"
+            step="0.05"
+            value={virtualCache.creation_jitter_ratio ?? 0}
+            onChange={(event) => setDraft({ ...draft, usage: { ...usage, virtual_cache: { ...virtualCache, creation_jitter_ratio: Number(event.target.value) } } })}
           />
         </Field>
         <Field label="默认代理">
@@ -3079,6 +3147,13 @@ function SettingsPanel({
             onCheckedChange={(checked) => setDraft({ ...draft, scheduler: { ...scheduler, redis_fail_closed: checked } })}
           />
           Redis 故障时关闭
+        </label>
+        <label className="switchLabel">
+          <Switch
+            checked={virtualCache.enabled ?? false}
+            onCheckedChange={(checked) => setDraft({ ...draft, usage: { ...usage, virtual_cache: { ...virtualCache, enabled: checked } } })}
+          />
+          虚拟 cache 账单
         </label>
         <label className="switchLabel">
           <Switch
@@ -3369,6 +3444,14 @@ function parseLines(raw: string): string[] {
   return Array.from(new Set(raw.split(/\r?\n|,/).map((line) => line.trim()).filter(Boolean))).sort();
 }
 
+function parseNumberPair(raw: string): [number, number] {
+  const nums = raw
+    .split(/[\r\n,，/ ]/)
+    .map((part) => Number(part.trim()))
+    .filter((value) => Number.isFinite(value));
+  return [nums[0] ?? 0, nums[1] ?? 0];
+}
+
 function emptyLogFilters(): LogFilters {
   return { q: "", route: "", status: "", errorClass: "", model: "", accountID: "", stream: "", retry: "" };
 }
@@ -3635,6 +3718,23 @@ function runtimePatch(config: RuntimeConfigSnapshot): RuntimeConfigSnapshot {
       redis_fail_closed: config.scheduler?.redis_fail_closed ?? false,
       max_inflight_per_account: config.scheduler?.max_inflight_per_account ?? 4,
       reservation_ttl_seconds: config.scheduler?.reservation_ttl_seconds ?? 180
+    },
+    usage: {
+      virtual_cache: {
+        enabled: config.usage?.virtual_cache?.enabled ?? false,
+        mode: config.usage?.virtual_cache?.mode || "conservative",
+        default_ttl: config.usage?.virtual_cache?.default_ttl || "5m",
+        uncached_input_tokens: config.usage?.virtual_cache?.uncached_input_tokens ?? 64,
+        min_input_tokens: config.usage?.virtual_cache?.min_input_tokens ?? 1,
+        max_input_tokens: config.usage?.virtual_cache?.max_input_tokens ?? 4096,
+        warmup_tokens: config.usage?.virtual_cache?.warmup_tokens ?? 0,
+        min_creation_tokens: config.usage?.virtual_cache?.min_creation_tokens ?? 0,
+        max_creation_tokens: config.usage?.virtual_cache?.max_creation_tokens ?? 8192,
+        creation_jitter_ratio: config.usage?.virtual_cache?.creation_jitter_ratio ?? 0,
+        burst_every_turns: config.usage?.virtual_cache?.burst_every_turns ?? 0,
+        burst_min_tokens: config.usage?.virtual_cache?.burst_min_tokens ?? 0,
+        burst_max_tokens: config.usage?.virtual_cache?.burst_max_tokens ?? 0
+      }
     },
     proxy: {
       default: config.proxy?.default ?? "",

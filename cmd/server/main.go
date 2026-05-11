@@ -22,6 +22,7 @@ import (
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
 	runtimeconfig "github.com/zhangyu/windsurfapi-go/internal/runtimeconfig"
 	"github.com/zhangyu/windsurfapi-go/internal/store"
+	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf/direct"
 )
 
@@ -56,6 +57,7 @@ func main() {
 	accountMgr := account.NewManager(sqliteStore)
 	accountMgr.SetMaxInflightPerAccount(cfg.Scheduler.MaxInflightPerAccount)
 	modelAccessMgr := modelaccess.NewManager(sqliteStore)
+	virtualUsageMgr := usagepkg.NewManager(cfg.Usage.VirtualCache)
 	runtimeConfigMgr := runtimeconfig.NewManager(cfg)
 	if cfg.Scheduler.RedisEnabled {
 		if redisStore == nil {
@@ -150,10 +152,10 @@ func main() {
 	dashboardAuth := handler.DashboardAuthMiddlewareFunc(runtimeConfigMgr.APIKeys, runtimeConfigMgr.DashboardPassword)
 
 	mux.Handle("/v1/models", auth(handler.ModelsHandler(modelAccessMgr)))
-	mux.Handle("/v1/chat/completions", auth(handler.ChatCompletionsHandler(cfg, accountMgr, directClient, reusePool, modelAccessMgr, proxyMgr)))
-	mux.Handle("/v1/messages", auth(handler.MessagesHandler(accountMgr, directClient, reusePool, modelAccessMgr, proxyMgr)))
-	mux.Handle("/v1/responses", auth(handler.ResponsesHandler(accountMgr, directClient, reusePool, modelAccessMgr, proxyMgr)))
-	mux.Handle("/v1/response", auth(handler.ResponsesHandler(accountMgr, directClient, reusePool, modelAccessMgr, proxyMgr)))
+	mux.Handle("/v1/chat/completions", auth(handler.ChatCompletionsHandler(cfg, accountMgr, directClient, reusePool, modelAccessMgr, proxyMgr, virtualUsageMgr)))
+	mux.Handle("/v1/messages", auth(handler.MessagesHandler(accountMgr, directClient, reusePool, modelAccessMgr, proxyMgr, virtualUsageMgr)))
+	mux.Handle("/v1/responses", auth(handler.ResponsesHandler(accountMgr, directClient, reusePool, modelAccessMgr, proxyMgr, virtualUsageMgr)))
+	mux.Handle("/v1/response", auth(handler.ResponsesHandler(accountMgr, directClient, reusePool, modelAccessMgr, proxyMgr, virtualUsageMgr)))
 	mux.Handle("/auth/status", dashboardAuth(handler.AuthStatusHandler(accountMgr)))
 	mux.Handle("/auth/login", dashboardAuth(handler.AuthLoginHandler(accountMgr)))
 	mux.Handle("/auth/accounts", dashboardAuth(handler.AuthAccountsHandler(accountMgr)))
@@ -167,7 +169,7 @@ func main() {
 	mux.Handle("/auth/models/", dashboardAuth(handler.AuthModelAccessHandler(modelAccessMgr)))
 	mux.Handle("/dashboard", handler.DashboardHandler())
 	mux.Handle("/dashboard/", handler.DashboardHandler())
-	mux.Handle("/dashboard/api/", dashboardAuth(handler.DashboardAPIHandler(accountMgr, modelAccessMgr, runtimeConfigMgr, directClient, reusePool, lsPool, proxyMgr)))
+	mux.Handle("/dashboard/api/", dashboardAuth(handler.DashboardAPIHandler(accountMgr, modelAccessMgr, runtimeConfigMgr, directClient, reusePool, lsPool, proxyMgr, virtualUsageMgr)))
 	mux.Handle("/debug/accounts", auth(handler.DebugAccountsHandler(accountMgr)))
 	mux.Handle("/debug/ls", auth(handler.DebugLSHandler(lsPool)))
 	mux.Handle("/debug/direct", auth(handler.DebugDirectHandler(directClient)))

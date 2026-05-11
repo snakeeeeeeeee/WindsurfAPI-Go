@@ -15,6 +15,7 @@ import (
 	"github.com/zhangyu/windsurfapi-go/internal/models"
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
 	"github.com/zhangyu/windsurfapi-go/internal/store"
+	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf/direct"
 )
@@ -183,20 +184,17 @@ func TestWriteMessagesResponseWithThinking(t *testing.T) {
 	}
 }
 
-func TestAnthropicUsageIncludesCacheFields(t *testing.T) {
-	got := anthropicUsage(&windsurf.Usage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, CacheWriteTokens: 10})
-	if got["cache_read_input_tokens"] != uint64(40) || got["cache_creation_input_tokens"] != uint64(10) {
+func TestAnthropicUsageDoesNotExposeUnverifiedCacheFields(t *testing.T) {
+	got := anthropicUsage(usagepkg.FromUpstream(&windsurf.Usage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, CacheWriteTokens: 10}, 0))
+	if got["input_tokens"] != uint64(100) || got["output_tokens"] != uint64(20) {
 		t.Fatalf("usage=%v", got)
 	}
 	creation := got["cache_creation"].(map[string]any)
-	if creation["ephemeral_5m_input_tokens"] != uint64(10) || creation["ephemeral_1h_input_tokens"] != uint64(0) {
-		t.Fatalf("creation=%v", creation)
+	if got["cache_read_input_tokens"] != uint64(0) || got["cache_creation_input_tokens"] != uint64(0) {
+		t.Fatalf("cache fields should be zeroed: %v", got)
 	}
-
-	got = anthropicUsage(&windsurf.Usage{InputTokens: 100, OutputTokens: 20, CacheWriteTokens: 10, CacheWrite1hTokens: 10})
-	creation = got["cache_creation"].(map[string]any)
-	if creation["ephemeral_5m_input_tokens"] != uint64(0) || creation["ephemeral_1h_input_tokens"] != uint64(10) {
-		t.Fatalf("1h creation=%v", creation)
+	if creation["ephemeral_5m_input_tokens"] != uint64(0) || creation["ephemeral_1h_input_tokens"] != uint64(0) {
+		t.Fatalf("creation=%v", creation)
 	}
 }
 
@@ -336,6 +334,13 @@ func TestMessagesHandlerKeepsOpus47ModelForToolRequests(t *testing.T) {
 	}
 	if rec.Header().Get("X-Windsurf-Tool-Mode") != "emulated" {
 		t.Fatalf("tool mode header=%q", rec.Header().Get("X-Windsurf-Tool-Mode"))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if resp["model"] != "claude-opus-4-7" {
+		t.Fatalf("response model should preserve requested public model, got=%v", resp["model"])
 	}
 }
 

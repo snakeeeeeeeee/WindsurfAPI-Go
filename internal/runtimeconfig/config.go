@@ -21,6 +21,7 @@ type Snapshot struct {
 	Direct    DirectView    `json:"direct"`
 	Health    HealthView    `json:"health"`
 	Scheduler SchedulerView `json:"scheduler"`
+	Usage     UsageView     `json:"usage"`
 	Dashboard DashboardView `json:"dashboard"`
 	Proxy     ProxyView     `json:"proxy"`
 	Log       LogView       `json:"log"`
@@ -68,6 +69,26 @@ type SchedulerView struct {
 	RedisFailClosed       bool `json:"redis_fail_closed"`
 	MaxInflightPerAccount int  `json:"max_inflight_per_account"`
 	ReservationTTLSeconds int  `json:"reservation_ttl_seconds"`
+}
+
+type UsageView struct {
+	VirtualCache VirtualCacheView `json:"virtual_cache"`
+}
+
+type VirtualCacheView struct {
+	Enabled             bool    `json:"enabled"`
+	Mode                string  `json:"mode"`
+	DefaultTTL          string  `json:"default_ttl"`
+	UncachedInputTokens int     `json:"uncached_input_tokens"`
+	MinInputTokens      int     `json:"min_input_tokens"`
+	MaxInputTokens      int     `json:"max_input_tokens"`
+	WarmupTokens        int     `json:"warmup_tokens"`
+	MinCreationTokens   int     `json:"min_creation_tokens"`
+	MaxCreationTokens   int     `json:"max_creation_tokens"`
+	CreationJitterRatio float64 `json:"creation_jitter_ratio"`
+	BurstEveryTurns     int     `json:"burst_every_turns"`
+	BurstMinTokens      int     `json:"burst_min_tokens"`
+	BurstMaxTokens      int     `json:"burst_max_tokens"`
 }
 
 type DashboardView struct {
@@ -125,6 +146,7 @@ type Patch struct {
 	Direct    *DirectView    `json:"direct,omitempty"`
 	Health    *HealthView    `json:"health,omitempty"`
 	Scheduler *SchedulerView `json:"scheduler,omitempty"`
+	Usage     *UsageView     `json:"usage,omitempty"`
 	Proxy     *ProxyView     `json:"proxy,omitempty"`
 	Log       *LogView       `json:"log,omitempty"`
 	Secrets   *SecretsPatch  `json:"secrets,omitempty"`
@@ -226,6 +248,23 @@ func (m *Manager) EnvSnapshot() map[string]any {
 			"max_inflight_per_account": m.cfg.Scheduler.MaxInflightPerAccount,
 			"reservation_ttl_seconds":  m.cfg.Scheduler.ReservationTTLSeconds,
 		},
+		"usage": map[string]any{
+			"virtual_cache": map[string]any{
+				"enabled":               m.cfg.Usage.VirtualCache.Enabled,
+				"mode":                  m.cfg.Usage.VirtualCache.Mode,
+				"default_ttl":           m.cfg.Usage.VirtualCache.DefaultTTL,
+				"uncached_input_tokens": m.cfg.Usage.VirtualCache.UncachedInputTokens,
+				"min_input_tokens":      m.cfg.Usage.VirtualCache.MinInputTokens,
+				"max_input_tokens":      m.cfg.Usage.VirtualCache.MaxInputTokens,
+				"warmup_tokens":         m.cfg.Usage.VirtualCache.WarmupTokens,
+				"min_creation_tokens":   m.cfg.Usage.VirtualCache.MinCreationTokens,
+				"max_creation_tokens":   m.cfg.Usage.VirtualCache.MaxCreationTokens,
+				"creation_jitter_ratio": m.cfg.Usage.VirtualCache.CreationJitterRatio,
+				"burst_every_turns":     m.cfg.Usage.VirtualCache.BurstEveryTurns,
+				"burst_min_tokens":      m.cfg.Usage.VirtualCache.BurstMinTokens,
+				"burst_max_tokens":      m.cfg.Usage.VirtualCache.BurstMaxTokens,
+			},
+		},
 		"proxy": map[string]any{
 			"default":                m.cfg.Proxy.Default,
 			"dynamic":                append([]string(nil), m.cfg.Proxy.Dynamic...),
@@ -310,6 +349,47 @@ func (m *Manager) Patch(p Patch) (Snapshot, error) {
 		m.cfg.Scheduler.RedisFailClosed = p.Scheduler.RedisFailClosed
 		m.cfg.Scheduler.MaxInflightPerAccount = p.Scheduler.MaxInflightPerAccount
 		m.cfg.Scheduler.ReservationTTLSeconds = p.Scheduler.ReservationTTLSeconds
+	}
+	if p.Usage != nil {
+		vc := p.Usage.VirtualCache
+		if strings.TrimSpace(vc.Mode) == "" {
+			vc.Mode = "conservative"
+		}
+		mode := strings.ToLower(strings.TrimSpace(vc.Mode))
+		if mode != "conservative" && mode != "dynamic" {
+			return Snapshot{}, fmt.Errorf("usage.virtual_cache.mode must be conservative or dynamic")
+		}
+		ttl := strings.ToLower(strings.TrimSpace(vc.DefaultTTL))
+		if ttl == "" {
+			ttl = "5m"
+		}
+		if ttl != "5m" && ttl != "1h" {
+			return Snapshot{}, fmt.Errorf("usage.virtual_cache.default_ttl must be 5m or 1h")
+		}
+		if vc.UncachedInputTokens <= 0 || vc.MinInputTokens <= 0 || vc.MaxInputTokens <= 0 {
+			return Snapshot{}, fmt.Errorf("usage virtual cache input token limits must be positive")
+		}
+		if vc.MinInputTokens > vc.MaxInputTokens {
+			return Snapshot{}, fmt.Errorf("usage virtual cache min_input_tokens must be <= max_input_tokens")
+		}
+		if vc.WarmupTokens < 0 || vc.MinCreationTokens < 0 || vc.MaxCreationTokens < 0 || vc.BurstEveryTurns < 0 || vc.BurstMinTokens < 0 || vc.BurstMaxTokens < 0 || vc.CreationJitterRatio < 0 {
+			return Snapshot{}, fmt.Errorf("usage virtual cache numeric settings must be >= 0")
+		}
+		m.cfg.Usage.VirtualCache = config.VirtualCacheUsageConfig{
+			Enabled:             vc.Enabled,
+			Mode:                mode,
+			DefaultTTL:          ttl,
+			UncachedInputTokens: vc.UncachedInputTokens,
+			MinInputTokens:      vc.MinInputTokens,
+			MaxInputTokens:      vc.MaxInputTokens,
+			WarmupTokens:        vc.WarmupTokens,
+			MinCreationTokens:   vc.MinCreationTokens,
+			MaxCreationTokens:   vc.MaxCreationTokens,
+			CreationJitterRatio: vc.CreationJitterRatio,
+			BurstEveryTurns:     vc.BurstEveryTurns,
+			BurstMinTokens:      vc.BurstMinTokens,
+			BurstMaxTokens:      vc.BurstMaxTokens,
+		}
 	}
 	if p.Proxy != nil {
 		m.cfg.Proxy.Default = strings.TrimSpace(p.Proxy.Default)
@@ -417,6 +497,21 @@ func snapshot(cfg *config.Config) Snapshot {
 			MaxInflightPerAccount: cfg.Scheduler.MaxInflightPerAccount,
 			ReservationTTLSeconds: cfg.Scheduler.ReservationTTLSeconds,
 		},
+		Usage: UsageView{VirtualCache: VirtualCacheView{
+			Enabled:             cfg.Usage.VirtualCache.Enabled,
+			Mode:                cfg.Usage.VirtualCache.Mode,
+			DefaultTTL:          cfg.Usage.VirtualCache.DefaultTTL,
+			UncachedInputTokens: cfg.Usage.VirtualCache.UncachedInputTokens,
+			MinInputTokens:      cfg.Usage.VirtualCache.MinInputTokens,
+			MaxInputTokens:      cfg.Usage.VirtualCache.MaxInputTokens,
+			WarmupTokens:        cfg.Usage.VirtualCache.WarmupTokens,
+			MinCreationTokens:   cfg.Usage.VirtualCache.MinCreationTokens,
+			MaxCreationTokens:   cfg.Usage.VirtualCache.MaxCreationTokens,
+			CreationJitterRatio: cfg.Usage.VirtualCache.CreationJitterRatio,
+			BurstEveryTurns:     cfg.Usage.VirtualCache.BurstEveryTurns,
+			BurstMinTokens:      cfg.Usage.VirtualCache.BurstMinTokens,
+			BurstMaxTokens:      cfg.Usage.VirtualCache.BurstMaxTokens,
+		}},
 		Dashboard: DashboardView{
 			Enabled:     cfg.Dashboard.Enabled,
 			Port:        cfg.Dashboard.Port,

@@ -21,6 +21,7 @@ import (
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
 	"github.com/zhangyu/windsurfapi-go/internal/sanitize"
 	"github.com/zhangyu/windsurfapi-go/internal/sse"
+	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf/direct"
 )
@@ -55,26 +56,30 @@ type directChatClient interface {
 }
 
 type directChatParams struct {
-	Model             *models.Model
-	Messages          []windsurf.ChatMessage
-	CallerKey         string
-	Route             string
-	Stream            bool
-	HTTPWriter        http.ResponseWriter
-	ProxyPool         *proxypool.Manager
-	ReuseTTL          time.Duration
-	Tools             []direct.ToolDefinition
-	ToolChoice        *direct.ToolChoice
-	Thinking          string
-	ParallelToolCalls *bool
-	StrictReuse       bool
-	TestAccountIDs    []int
-	OnStreamStart     func() error
-	OnTextDelta       func(string) error
-	OnThinkingDelta   func(string) error
-	OnToolCallDelta   func(int, windsurf.ToolCall) error
-	OnStreamError     func(account.ErrorClass, error) error
-	OnStreamFinish    func(*windsurf.ChatResult) error
+	Model              *models.Model
+	DisplayModelID     string
+	Messages           []windsurf.ChatMessage
+	CallerKey          string
+	Route              string
+	Stream             bool
+	HTTPWriter         http.ResponseWriter
+	ProxyPool          *proxypool.Manager
+	ReuseTTL           time.Duration
+	Tools              []direct.ToolDefinition
+	ToolChoice         *direct.ToolChoice
+	Thinking           string
+	ParallelToolCalls  *bool
+	StrictReuse        bool
+	TestAccountIDs     []int
+	InputTokenEstimate uint64
+	VirtualUsage       *usagepkg.Manager
+	UsageOut           *usagepkg.Usage
+	OnStreamStart      func() error
+	OnTextDelta        func(string) error
+	OnThinkingDelta    func(string) error
+	OnToolCallDelta    func(int, windsurf.ToolCall) error
+	OnStreamError      func(account.ErrorClass, error) error
+	OnStreamFinish     func(*windsurf.ChatResult) error
 }
 
 type ChatMessage struct {
@@ -133,10 +138,18 @@ func (m ChatMessage) text() string {
 
 // ChatCompletionsHandler serves OpenAI-compatible chat through direct Windsurf
 // cloud RPCs. The LS-backed client remains legacy-only.
-func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...*proxypool.Manager) http.HandlerFunc {
+func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...any) http.HandlerFunc {
 	var proxyPool *proxypool.Manager
+	var usageMgr *usagepkg.Manager
 	if len(pp) > 0 {
-		proxyPool = pp[0]
+		for _, item := range pp {
+			switch v := item.(type) {
+			case *proxypool.Manager:
+				proxyPool = v
+			case *usagepkg.Manager:
+				usageMgr = v
+			}
+		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
@@ -169,7 +182,8 @@ func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChat
 			writeOpenAIError(w, http.StatusForbidden, "model blocked: "+reason, "model_blocked")
 			return
 		}
-		setOpenAIHeaders(w, model.ID, 0)
+		displayModelID := responseModelID(req.Model, model)
+		setOpenAIHeaders(w, displayModelID, 0)
 
 		wMsgs := make([]windsurf.ChatMessage, 0, len(req.Messages))
 		for _, m := range req.Messages {
@@ -204,7 +218,8 @@ func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChat
 		if req.StrictReuse != nil {
 			strictReuse = *req.StrictReuse
 		}
-		result, status, err := executeOpenAIChat(r, dc, am, rp, model, wMsgs, callerKey, req.Stream, w, tools, choice, req.ParallelToolCalls, strictReuse, proxyPool, openAIReasoningPrompt(req))
+		inputTokenEstimate := estimateInputTokens(wMsgs, tools)
+		result, status, err := executeOpenAIChat(r, dc, am, rp, model, displayModelID, wMsgs, callerKey, req.Stream, w, tools, choice, req.ParallelToolCalls, strictReuse, proxyPool, usageMgr, openAIReasoningPrompt(req), inputTokenEstimate)
 		if err != nil {
 			writeJSONError(w, status, err.Error())
 			return
@@ -212,8 +227,8 @@ func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChat
 		if req.Stream {
 			return
 		}
-		setOpenAIHeaders(w, model.ID, time.Since(started))
-		writeUnaryResponse(w, model.ID, result)
+		setOpenAIHeaders(w, displayModelID, time.Since(started))
+		writeUnaryResponse(w, displayModelID, result, inputTokenEstimate)
 	}
 }
 
@@ -469,27 +484,35 @@ func shouldSuppressToolsForContinuation(messages []ChatMessage, choice *direct.T
 	return false
 }
 
-func executeOpenAIChat(r *http.Request, dc directChatClient, am *account.Manager, rp *reusepool.Pool, model *models.Model, msgs []windsurf.ChatMessage, callerKey string, stream bool, w http.ResponseWriter, tools []direct.ToolDefinition, choice *direct.ToolChoice, parallelToolCalls *bool, strictReuse bool, proxyPool *proxypool.Manager, thinking string) (*windsurf.ChatResult, int, error) {
+func executeOpenAIChat(r *http.Request, dc directChatClient, am *account.Manager, rp *reusepool.Pool, model *models.Model, displayModelID string, msgs []windsurf.ChatMessage, callerKey string, stream bool, w http.ResponseWriter, tools []direct.ToolDefinition, choice *direct.ToolChoice, parallelToolCalls *bool, strictReuse bool, proxyPool *proxypool.Manager, usageMgr *usagepkg.Manager, thinking string, inputTokenEstimate uint64) (*windsurf.ChatResult, int, error) {
 	var sw *sse.Writer
+	var responseUsage usagepkg.Usage
+	if strings.TrimSpace(displayModelID) == "" && model != nil {
+		displayModelID = model.ID
+	}
 	params := directChatParams{
-		Model:             model,
-		Messages:          msgs,
-		CallerKey:         callerKey,
-		Route:             "chat_completions",
-		Stream:            stream,
-		HTTPWriter:        w,
-		ProxyPool:         proxyPool,
-		Thinking:          thinking,
-		Tools:             tools,
-		ToolChoice:        choice,
-		ParallelToolCalls: parallelToolCalls,
-		StrictReuse:       strictReuse,
-		TestAccountIDs:    testAccountIDsFromRequest(r),
+		Model:              model,
+		DisplayModelID:     displayModelID,
+		Messages:           msgs,
+		CallerKey:          callerKey,
+		Route:              "chat_completions",
+		Stream:             stream,
+		HTTPWriter:         w,
+		ProxyPool:          proxyPool,
+		Thinking:           thinking,
+		Tools:              tools,
+		ToolChoice:         choice,
+		ParallelToolCalls:  parallelToolCalls,
+		StrictReuse:        strictReuse,
+		TestAccountIDs:     testAccountIDsFromRequest(r),
+		InputTokenEstimate: inputTokenEstimate,
+		VirtualUsage:       usageMgr,
+		UsageOut:           &responseUsage,
 	}
 	if stream {
 		params.OnStreamStart = func() error {
 			var err error
-			sw, err = sse.NewWriter(w, model.ID)
+			sw, err = sse.NewWriter(w, displayModelID)
 			if err == nil {
 				_ = sw.Role()
 			}
@@ -522,13 +545,13 @@ func executeOpenAIChat(r *http.Request, dc directChatClient, am *account.Manager
 		params.OnStreamFinish = func(result *windsurf.ChatResult) error {
 			if sw == nil {
 				var err error
-				sw, err = sse.NewWriter(w, model.ID)
+				sw, err = sse.NewWriter(w, displayModelID)
 				if err != nil {
 					return err
 				}
 				_ = sw.Role()
 			}
-			return sw.Finish(result.FinishReason, usageToSSE(result.Usage))
+			return sw.Finish(result.FinishReason, usageToSSE(responseUsage))
 		}
 	}
 	return executeDirectChat(r, dc, am, rp, params)
@@ -640,7 +663,7 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 			APIKey:       res.Account.FirebaseToken,
 			ProxyURL:     proxyRes.ProxyURL,
 			Model:        params.Model,
-			ReportedName: params.Model.ID,
+			ReportedName: params.DisplayModelID,
 			Messages:     params.Messages,
 			Thinking:     params.Thinking,
 			Tools:        params.Tools,
@@ -727,6 +750,10 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 			log.Printf("req_id=%s route=%s event=direct_chat_ok model=%s tool_mode=%s account_id=%d attempt=%d total_ms=%d send_ms=%d reuse_hit=%v usage_in=%d usage_out=%d cache_read=%d tool_call_count=%d",
 				reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), res.Account.ID, attempt, time.Since(start).Milliseconds(), time.Since(sendStarted).Milliseconds(), reuseHit,
 				usageIn(result), usageOut(result), usageCacheRead(result), len(result.ToolCalls))
+			responseUsage := buildResponseUsage(params, res.Account.ID, result)
+			if params.UsageOut != nil {
+				*params.UsageOut = responseUsage
+			}
 			recordRequestEvent(RequestEvent{
 				RequestID:       reqID,
 				Route:           route,
@@ -741,9 +768,9 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 				LatencyMS:       time.Since(start).Milliseconds(),
 				SendMS:          time.Since(sendStarted).Milliseconds(),
 				FirstTextMS:     firstTextMS,
-				UsageInput:      usageIn(result),
-				UsageOutput:     usageOut(result),
-				UsageCacheRead:  usageCacheRead(result),
+				UsageInput:      responseUsage.InputTokens,
+				UsageOutput:     responseUsage.OutputTokens,
+				UsageCacheRead:  responseUsage.CacheReadInputTokens,
 				ToolCallCount:   len(result.ToolCalls),
 				ReuseHit:        reuseHit,
 				ReuseMissReason: reuseMissReason,
@@ -831,7 +858,7 @@ func directRequestShape(params directChatParams) string {
 		len(params.Messages), systemBytes, userBytes, assistantBytes, toolResultBytes, len(params.Tools), toolHistory, choice, len(params.Thinking), params.Stream)
 }
 
-func writeUnaryResponse(w http.ResponseWriter, modelID string, result *windsurf.ChatResult) {
+func writeUnaryResponse(w http.ResponseWriter, modelID string, result *windsurf.ChatResult, inputTokenEstimate ...uint64) {
 	result = sanitizeChatResult(result)
 	message := map[string]any{"role": "assistant", "content": result.Text}
 	if strings.TrimSpace(result.Thinking) != "" {
@@ -851,7 +878,7 @@ func writeUnaryResponse(w http.ResponseWriter, modelID string, result *windsurf.
 			"message":       message,
 			"finish_reason": finishReason(result),
 		}},
-		"usage": usageMap(result.Usage),
+		"usage": usageMap(usagepkg.FromUpstream(result.Usage, firstUint64(inputTokenEstimate))),
 	}
 	setNoStore(w)
 	w.Header().Set("Content-Type", "application/json")
@@ -1119,48 +1146,112 @@ func finishReason(result *windsurf.ChatResult) string {
 	return result.FinishReason
 }
 
-func usageMap(u *windsurf.Usage) map[string]any {
-	usage := map[string]any{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-	if u != nil {
-		usage["prompt_tokens"] = u.InputTokens
-		usage["completion_tokens"] = u.OutputTokens
-		usage["total_tokens"] = u.InputTokens + u.OutputTokens
-		if u.CacheReadTokens > 0 {
-			usage["prompt_tokens_details"] = map[string]any{"cached_tokens": u.CacheReadTokens}
-			usage["cache_read_input_tokens"] = u.CacheReadTokens
-		}
-		if u.CacheWriteTokens > 0 {
-			usage["cache_creation_input_tokens"] = u.CacheWriteTokens
-			cacheWrite5m, cacheWrite1h := cacheWriteSplit(u)
-			usage["cache_creation"] = map[string]any{
-				"ephemeral_5m_input_tokens": cacheWrite5m,
-				"ephemeral_1h_input_tokens": cacheWrite1h,
-			}
-		}
-	}
-	return usage
+func usageMap(u usagepkg.Usage) map[string]any {
+	return usagepkg.OpenAIMap(u)
 }
 
-func cacheWriteSplit(u *windsurf.Usage) (uint64, uint64) {
-	if u == nil || u.CacheWriteTokens == 0 {
-		return 0, 0
-	}
-	if u.CacheWrite5mTokens == 0 && u.CacheWrite1hTokens == 0 {
-		return u.CacheWriteTokens, 0
-	}
-	return u.CacheWrite5mTokens, u.CacheWrite1hTokens
-}
-
-func usageToSSE(u *windsurf.Usage) *sse.Usage {
-	if u == nil {
+func usageToSSE(u usagepkg.Usage) *sse.Usage {
+	if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0 {
 		return nil
 	}
 	return &sse.Usage{
 		PromptTokens:      u.InputTokens,
 		CompletionTokens:  u.OutputTokens,
 		TotalTokens:       u.InputTokens + u.OutputTokens,
-		CachedInputTokens: u.CacheReadTokens,
+		CachedInputTokens: u.CacheReadInputTokens,
 	}
+}
+
+func buildResponseUsage(params directChatParams, accountID int, result *windsurf.ChatResult) usagepkg.Usage {
+	input := usagepkg.Input{
+		AccountID:             accountID,
+		Model:                 "",
+		CallerKeyHash:         shortHash(params.CallerKey),
+		Route:                 params.Route,
+		EstimatedInputTokens:  params.InputTokenEstimate,
+		EstimatedUserDeltaTok: params.InputTokenEstimate,
+	}
+	if params.Model != nil {
+		input.Model = params.Model.ID
+	}
+	if result != nil && result.Usage != nil {
+		input.ObservedInputTokens = result.Usage.InputTokens
+		input.OutputTokens = result.Usage.OutputTokens
+	}
+	if params.VirtualUsage != nil {
+		return params.VirtualUsage.Build(input)
+	}
+	if result == nil {
+		return usagepkg.FromUpstream(nil, params.InputTokenEstimate)
+	}
+	return usagepkg.FromUpstream(result.Usage, params.InputTokenEstimate)
+}
+
+func responseModelID(requested string, resolved *models.Model) string {
+	raw := cleanModelID(requested)
+	if raw == "" {
+		if resolved != nil {
+			return resolved.ID
+		}
+		return ""
+	}
+	normalized := models.NormalizeModelID(raw)
+	for _, publicID := range models.PublicModelIDs {
+		if raw == publicID {
+			return publicID
+		}
+		if normalized != "" && normalized == models.ResolveModelIDForRequest(publicID, "") {
+			return publicID
+		}
+	}
+	return raw
+}
+
+func cleanModelID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func estimateInputTokens(messages []windsurf.ChatMessage, tools []direct.ToolDefinition) uint64 {
+	chars := 0
+	for _, msg := range messages {
+		chars += len(msg.Role) + len(msg.Content) + 12
+		if msg.ToolCallID != "" {
+			chars += len(msg.ToolCallID)
+		}
+		for _, call := range msg.ToolCalls {
+			chars += len(call.ID) + len(call.Name) + len(call.ArgumentsJSON) + 12
+		}
+	}
+	for _, tool := range tools {
+		chars += len(tool.Name) + len(tool.Description) + len(tool.SchemaJSON) + 64
+	}
+	if chars <= 0 {
+		return 0
+	}
+	tokens := uint64((chars + 3) / 4)
+	if tokens == 0 {
+		tokens = 1
+	}
+	return tokens
+}
+
+func firstUint64(values []uint64) uint64 {
+	if len(values) == 0 {
+		return 0
+	}
+	return values[0]
 }
 
 func usageIn(r *windsurf.ChatResult) uint64 {

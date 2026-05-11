@@ -162,6 +162,13 @@ func TestResponsesHandlerKeepsOpus47ModelForToolRequests(t *testing.T) {
 	if rec.Header().Get("X-Windsurf-Tool-Mode") != "emulated" {
 		t.Fatalf("tool mode header=%q", rec.Header().Get("X-Windsurf-Tool-Mode"))
 	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if resp["model"] != "claude-opus-4-7" {
+		t.Fatalf("response model should preserve requested public model, got=%v", resp["model"])
+	}
 }
 
 func TestWriteResponsesResponseWithToolCall(t *testing.T) {
@@ -255,7 +262,7 @@ func TestResponsesToolChoiceForDroppedServerToolIsPruned(t *testing.T) {
 
 func TestResponsesStreamWriterShape(t *testing.T) {
 	rec := httptest.NewRecorder()
-	sw, err := newResponsesStreamWriter(rec, "claude-sonnet-4.6")
+	sw, err := newResponsesStreamWriter(rec, "claude-sonnet-4.6", uint64(12))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,6 +280,9 @@ func TestResponsesStreamWriterShape(t *testing.T) {
 	}
 	if !strings.Contains(body, `"status":"completed"`) || !strings.Contains(body, `"content":[{"text":"hi","type":"output_text"}]`) {
 		t.Fatalf("missing completed text item in %q", body)
+	}
+	if !strings.Contains(body, `"usage":{"completion_tokens":0,"prompt_tokens":12,"total_tokens":12}`) {
+		t.Fatalf("missing fallback input usage in completed event body=%q", body)
 	}
 }
 

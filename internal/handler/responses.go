@@ -15,6 +15,7 @@ import (
 	"github.com/zhangyu/windsurfapi-go/internal/redact"
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
 	"github.com/zhangyu/windsurfapi-go/internal/sanitize"
+	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf/direct"
 )
@@ -43,6 +44,7 @@ type responsesStreamWriter struct {
 	flusher              http.Flusher
 	id                   string
 	model                string
+	usage                usagepkg.Usage
 	textItemID           string
 	textOutputIndex      int
 	reasoningItemID      string
@@ -65,10 +67,18 @@ type responseToolMeta struct {
 	OriginalName string
 }
 
-func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...*proxypool.Manager) http.HandlerFunc {
+func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...any) http.HandlerFunc {
 	var proxyPool *proxypool.Manager
+	var usageMgr *usagepkg.Manager
 	if len(pp) > 0 {
-		proxyPool = pp[0]
+		for _, item := range pp {
+			switch v := item.(type) {
+			case *proxypool.Manager:
+				proxyPool = v
+			case *usagepkg.Manager:
+				usageMgr = v
+			}
+		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
@@ -95,7 +105,8 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 			writeOpenAIError(w, http.StatusForbidden, "model blocked: "+reason, "model_blocked")
 			return
 		}
-		setOpenAIHeaders(w, model.ID, 0)
+		displayModelID := responseModelID(req.Model, model)
+		setOpenAIHeaders(w, displayModelID, 0)
 		msgs, err := responsesInputToMessages(req)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -120,21 +131,27 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 			tools = nil
 			choice = nil
 		}
+		inputTokenEstimate := estimateInputTokens(msgs, tools)
 		thinking := responsesReasoningPrompt(req.Reasoning)
 
 		var stream *responsesStreamWriter
+		var responseUsage usagepkg.Usage
 		params := directChatParams{
-			Model:          model,
-			Messages:       msgs,
-			CallerKey:      callerKeyForBody(r, req),
-			Route:          "responses",
-			Stream:         req.Stream,
-			HTTPWriter:     w,
-			ProxyPool:      proxyPool,
-			Thinking:       thinking,
-			Tools:          tools,
-			ToolChoice:     choice,
-			TestAccountIDs: testAccountIDsFromRequest(r),
+			Model:              model,
+			DisplayModelID:     displayModelID,
+			Messages:           msgs,
+			CallerKey:          callerKeyForBody(r, req),
+			Route:              "responses",
+			Stream:             req.Stream,
+			HTTPWriter:         w,
+			ProxyPool:          proxyPool,
+			Thinking:           thinking,
+			Tools:              tools,
+			ToolChoice:         choice,
+			TestAccountIDs:     testAccountIDsFromRequest(r),
+			InputTokenEstimate: inputTokenEstimate,
+			VirtualUsage:       usageMgr,
+			UsageOut:           &responseUsage,
 			StrictReuse: func() bool {
 				if req.StrictReuse != nil {
 					return *req.StrictReuse
@@ -145,7 +162,7 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 		if req.Stream {
 			params.OnStreamStart = func() error {
 				var err error
-				stream, err = newResponsesStreamWriter(w, model.ID, toolMeta)
+				stream, err = newResponsesStreamWriter(w, displayModelID, toolMeta, usagepkg.FromUpstream(nil, inputTokenEstimate))
 				return err
 			}
 			params.OnTextDelta = func(delta string) error {
@@ -166,11 +183,12 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 			params.OnStreamFinish = func(result *windsurf.ChatResult) error {
 				if stream == nil {
 					var err error
-					stream, err = newResponsesStreamWriter(w, model.ID, toolMeta)
+					stream, err = newResponsesStreamWriter(w, displayModelID, toolMeta, usagepkg.FromUpstream(nil, inputTokenEstimate))
 					if err != nil {
 						return err
 					}
 				}
+				stream.usage = responseUsage
 				return stream.Finish(result)
 			}
 		}
@@ -183,8 +201,8 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 		if req.Stream {
 			return
 		}
-		setOpenAIHeaders(w, model.ID, time.Since(started))
-		writeResponsesResponseWithMeta(w, model.ID, result, toolMeta)
+		setOpenAIHeaders(w, displayModelID, time.Since(started))
+		writeResponsesResponseWithMeta(w, displayModelID, result, toolMeta, responseUsage)
 	}
 }
 
@@ -572,8 +590,9 @@ func writeResponsesResponse(w http.ResponseWriter, modelID string, result *winds
 	writeResponsesResponseWithMeta(w, modelID, result, nil)
 }
 
-func writeResponsesResponseWithMeta(w http.ResponseWriter, modelID string, result *windsurf.ChatResult, meta map[string]responseToolMeta) {
+func writeResponsesResponseWithMeta(w http.ResponseWriter, modelID string, result *windsurf.ChatResult, meta map[string]responseToolMeta, values ...any) {
 	result = sanitizeChatResult(result)
+	responseUsage := responsesUsageFromArgs(result, values...)
 	resp := map[string]any{
 		"id":                  "resp_" + strconv.FormatInt(time.Now().UnixNano(), 36),
 		"object":              "response",
@@ -582,7 +601,7 @@ func writeResponsesResponseWithMeta(w http.ResponseWriter, modelID string, resul
 		"status":              responsesStatus(result),
 		"parallel_tool_calls": true,
 		"output":              responsesOutputWithMeta(result, meta),
-		"usage":               usageMap(result.Usage),
+		"usage":               usageMap(responseUsage),
 	}
 	setNoStore(w)
 	w.Header().Set("Content-Type", "application/json")
@@ -631,7 +650,7 @@ func responsesReasoningItemWithID(id, text, status string) map[string]any {
 	}
 }
 
-func newResponsesStreamWriter(w http.ResponseWriter, modelID string, meta ...map[string]responseToolMeta) (*responsesStreamWriter, error) {
+func newResponsesStreamWriter(w http.ResponseWriter, modelID string, opts ...any) (*responsesStreamWriter, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return nil, fmt.Errorf("response writer does not support flushing")
@@ -641,14 +660,23 @@ func newResponsesStreamWriter(w http.ResponseWriter, modelID string, meta ...map
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	var toolMeta map[string]responseToolMeta
-	if len(meta) > 0 {
-		toolMeta = meta[0]
+	var responseUsage usagepkg.Usage
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case map[string]responseToolMeta:
+			toolMeta = v
+		case usagepkg.Usage:
+			responseUsage = v
+		case uint64:
+			responseUsage = usagepkg.FromUpstream(nil, v)
+		}
 	}
 	s := &responsesStreamWriter{
 		w:                    w,
 		flusher:              flusher,
 		id:                   "resp_" + strconv.FormatInt(time.Now().UnixNano(), 36),
 		model:                modelID,
+		usage:                responseUsage,
 		textOutputIndex:      -1,
 		reasoningOutputIndex: -1,
 		toolStarted:          map[int]bool{},
@@ -813,11 +841,35 @@ func (s *responsesStreamWriter) Finish(result *windsurf.ChatResult) error {
 			return err
 		}
 	}
-	if err := s.event("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"id": s.id, "object": "response", "model": s.model, "status": responsesStatus(result), "output": responsesOutputWithMeta(result, s.toolMeta), "usage": usageMap(result.Usage)}}); err != nil {
+	streamUsage := s.usage
+	if !streamUsage.Virtual && streamUsage.InputTokens == 0 && streamUsage.OutputTokens == 0 {
+		streamUsage = usagepkg.FromUpstream(result.Usage, 0)
+	}
+	if err := s.event("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"id": s.id, "object": "response", "model": s.model, "status": responsesStatus(result), "output": responsesOutputWithMeta(result, s.toolMeta), "usage": usageMap(streamUsage)}}); err != nil {
 		return err
 	}
 	s.closed = true
 	return nil
+}
+
+func responsesUsageFromArgs(result *windsurf.ChatResult, values ...any) usagepkg.Usage {
+	var responseUsage *usagepkg.Usage
+	var fallback uint64
+	for _, value := range values {
+		switch v := value.(type) {
+		case usagepkg.Usage:
+			responseUsage = &v
+		case uint64:
+			fallback = v
+		}
+	}
+	if responseUsage != nil {
+		return *responseUsage
+	}
+	if result == nil {
+		return usagepkg.FromUpstream(nil, fallback)
+	}
+	return usagepkg.FromUpstream(result.Usage, fallback)
 }
 
 func responseToolOutputItem(call windsurf.ToolCall, meta map[string]responseToolMeta) any {

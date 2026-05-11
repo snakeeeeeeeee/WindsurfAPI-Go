@@ -107,6 +107,26 @@ type SchedulerConfig struct {
 	ReservationTTLSeconds int  `yaml:"reservation_ttl_seconds"`
 }
 
+type UsageConfig struct {
+	VirtualCache VirtualCacheUsageConfig `yaml:"virtual_cache"`
+}
+
+type VirtualCacheUsageConfig struct {
+	Enabled             bool    `yaml:"enabled"`
+	Mode                string  `yaml:"mode"`
+	DefaultTTL          string  `yaml:"default_ttl"`
+	UncachedInputTokens int     `yaml:"uncached_input_tokens"`
+	MinInputTokens      int     `yaml:"min_input_tokens"`
+	MaxInputTokens      int     `yaml:"max_input_tokens"`
+	WarmupTokens        int     `yaml:"warmup_tokens"`
+	MinCreationTokens   int     `yaml:"min_creation_tokens"`
+	MaxCreationTokens   int     `yaml:"max_creation_tokens"`
+	CreationJitterRatio float64 `yaml:"creation_jitter_ratio"`
+	BurstEveryTurns     int     `yaml:"burst_every_turns"`
+	BurstMinTokens      int     `yaml:"burst_min_tokens"`
+	BurstMaxTokens      int     `yaml:"burst_max_tokens"`
+}
+
 type LogConfig struct {
 	Level string `yaml:"level"`
 }
@@ -121,6 +141,7 @@ type Config struct {
 	Direct    DirectConfig    `yaml:"direct"`
 	Health    HealthConfig    `yaml:"health"`
 	Scheduler SchedulerConfig `yaml:"scheduler"`
+	Usage     UsageConfig     `yaml:"usage"`
 	Dashboard DashboardConfig `yaml:"dashboard"`
 	Proxy     ProxyConfig     `yaml:"proxy"`
 	Log       LogConfig       `yaml:"log"`
@@ -184,6 +205,21 @@ func Load(path string) (*Config, error) {
 			MaxInflightPerAccount: 4,
 			ReservationTTLSeconds: 180,
 		},
+		Usage: UsageConfig{VirtualCache: VirtualCacheUsageConfig{
+			Enabled:             false,
+			Mode:                "conservative",
+			DefaultTTL:          "5m",
+			UncachedInputTokens: 64,
+			MinInputTokens:      1,
+			MaxInputTokens:      4096,
+			WarmupTokens:        0,
+			MinCreationTokens:   0,
+			MaxCreationTokens:   8192,
+			CreationJitterRatio: 0,
+			BurstEveryTurns:     0,
+			BurstMinTokens:      0,
+			BurstMaxTokens:      0,
+		}},
 		Proxy: ProxyConfig{
 			RotateOnError:     true,
 			TestURL:           "https://ipinfo.io/json",
@@ -249,6 +285,24 @@ func applyRuntimeDefaults(cfg *Config) {
 	}
 	if cfg.Scheduler.ReservationTTLSeconds <= 0 {
 		cfg.Scheduler.ReservationTTLSeconds = 180
+	}
+	if cfg.Usage.VirtualCache.Mode == "" {
+		cfg.Usage.VirtualCache.Mode = "conservative"
+	}
+	if cfg.Usage.VirtualCache.DefaultTTL == "" {
+		cfg.Usage.VirtualCache.DefaultTTL = "5m"
+	}
+	if cfg.Usage.VirtualCache.UncachedInputTokens <= 0 {
+		cfg.Usage.VirtualCache.UncachedInputTokens = 64
+	}
+	if cfg.Usage.VirtualCache.MinInputTokens <= 0 {
+		cfg.Usage.VirtualCache.MinInputTokens = 1
+	}
+	if cfg.Usage.VirtualCache.MaxInputTokens <= 0 {
+		cfg.Usage.VirtualCache.MaxInputTokens = 4096
+	}
+	if cfg.Usage.VirtualCache.MaxCreationTokens <= 0 {
+		cfg.Usage.VirtualCache.MaxCreationTokens = 8192
 	}
 	if cfg.Proxy.CooldownSeconds <= 0 {
 		cfg.Proxy.CooldownSeconds = 120
@@ -386,6 +440,67 @@ func applyEnvOverrides(cfg *Config) {
 	if v := getenv("WINDSURFAPI_RESERVATION_TTL_SECONDS", "RESERVATION_TTL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Scheduler.ReservationTTLSeconds = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_ENABLED", "VIRTUAL_CACHE_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Usage.VirtualCache.Enabled = b
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_MODE", "VIRTUAL_CACHE_MODE"); v != "" {
+		cfg.Usage.VirtualCache.Mode = v
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_DEFAULT_TTL", "VIRTUAL_CACHE_DEFAULT_TTL"); v != "" {
+		cfg.Usage.VirtualCache.DefaultTTL = v
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_UNCACHED_INPUT_TOKENS", "VIRTUAL_CACHE_UNCACHED_INPUT_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Usage.VirtualCache.UncachedInputTokens = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_MIN_INPUT_TOKENS", "VIRTUAL_CACHE_MIN_INPUT_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Usage.VirtualCache.MinInputTokens = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_MAX_INPUT_TOKENS", "VIRTUAL_CACHE_MAX_INPUT_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Usage.VirtualCache.MaxInputTokens = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_WARMUP_TOKENS", "VIRTUAL_CACHE_WARMUP_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Usage.VirtualCache.WarmupTokens = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_MIN_CREATION_TOKENS", "VIRTUAL_CACHE_MIN_CREATION_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Usage.VirtualCache.MinCreationTokens = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_MAX_CREATION_TOKENS", "VIRTUAL_CACHE_MAX_CREATION_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Usage.VirtualCache.MaxCreationTokens = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_CREATION_JITTER_RATIO", "VIRTUAL_CACHE_CREATION_JITTER_RATIO"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			cfg.Usage.VirtualCache.CreationJitterRatio = f
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_BURST_EVERY_TURNS", "VIRTUAL_CACHE_BURST_EVERY_TURNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Usage.VirtualCache.BurstEveryTurns = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_BURST_MIN_TOKENS", "VIRTUAL_CACHE_BURST_MIN_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Usage.VirtualCache.BurstMinTokens = n
+		}
+	}
+	if v := getenv("WINDSURFAPI_VIRTUAL_CACHE_BURST_MAX_TOKENS", "VIRTUAL_CACHE_BURST_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Usage.VirtualCache.BurstMaxTokens = n
 		}
 	}
 	if v := getenv("WINDSURFAPI_DASHBOARD_PASSWORD", "DASHBOARD_PASSWORD"); v != "" {
