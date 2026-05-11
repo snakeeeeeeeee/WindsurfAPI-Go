@@ -143,6 +143,7 @@ func main() {
 		Model:             cfg.Health.Model,
 	}, accountMgr, directClient, proxyMgr)
 	healthWorker.Start(ctx)
+	startProxyMaintenanceWorker(ctx, proxyMgr, accountMgr)
 
 	mux := http.NewServeMux()
 	auth := handler.AuthMiddlewareFunc(runtimeConfigMgr.APIKeys)
@@ -219,4 +220,47 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("服务器错误: %v", err)
 	}
+}
+
+func startProxyMaintenanceWorker(ctx context.Context, proxyMgr *proxypool.Manager, accountMgr *account.Manager) {
+	if proxyMgr == nil || accountMgr == nil {
+		return
+	}
+	interval := proxyMgr.WorkerInterval()
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !proxyMgr.AccountBindingEnabled() {
+					continue
+				}
+				accounts, err := accountMgr.GetAllAccounts()
+				if err != nil {
+					log.Printf("dynamic_proxy_worker accounts_error=%v", err)
+					continue
+				}
+				refs := make([]proxypool.AccountRef, 0, len(accounts))
+				for _, a := range accounts {
+					refs = append(refs, proxypool.AccountRef{ID: a.ID, Enabled: a.Enabled, Banned: a.Banned, Active: a.Enabled && !a.Banned})
+				}
+				maintCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				result, err := proxyMgr.RunMaintenance(maintCtx, refs)
+				cancel()
+				if err != nil {
+					log.Printf("dynamic_proxy_worker error=%v result=%v", err, result)
+					continue
+				}
+				if planned, _ := result["planned"].(int); planned > 0 {
+					log.Printf("dynamic_proxy_worker planned=%v processed=%v failed=%v", result["planned"], result["processed"], result["failed"])
+				}
+			}
+		}
+	}()
 }

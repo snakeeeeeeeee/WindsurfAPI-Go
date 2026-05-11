@@ -188,7 +188,7 @@ func Load(path string) (*Config, error) {
 			RotateOnError:     true,
 			TestURL:           "https://ipinfo.io/json",
 			CooldownSeconds:   120,
-			AccountBinding:    false,
+			AccountBinding:    true,
 			AutoBindNew:       false,
 			RenewBeforeMS:     900000,
 			MaxBindRetries:    3,

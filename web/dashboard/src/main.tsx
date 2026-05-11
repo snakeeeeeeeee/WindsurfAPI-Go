@@ -514,6 +514,7 @@ function App() {
   const [proxyDraft, setProxyDraft] = useState("");
   const [selectedID, setSelectedID] = useState<number | null>(null);
   const [accountSelection, setAccountSelection] = useState<RowSelectionState>({});
+  const [proxyAccountSelection, setProxyAccountSelection] = useState<RowSelectionState>({});
   const [clearCacheOpen, setClearCacheOpen] = useState(false);
   const [streamingLogs, setStreamingLogs] = useState(false);
   const [showAllModels, setShowAllModels] = useState(false);
@@ -782,7 +783,19 @@ function App() {
     ...mutationOptions
   });
   const bindProxyAccounts = useMutation({
-    mutationFn: (payload: { account_ids: number[]; proxy_id?: string; proxy_url?: string; clear?: boolean; generate?: boolean; rotate?: boolean; dynamic?: boolean }) =>
+    mutationFn: (payload: {
+      account_ids: number[];
+      proxy_id?: string;
+      proxy_url?: string;
+      action?: string;
+      clear?: boolean;
+      generate?: boolean;
+      rotate?: boolean;
+      dynamic?: boolean;
+      verify?: boolean;
+      suspend?: boolean;
+      resume?: boolean;
+    }) =>
       sendJSON("/dashboard/api/proxy/bind-accounts", authState, "POST", payload),
     ...mutationOptions
   });
@@ -840,6 +853,7 @@ function App() {
   const selected = selectedID == null ? accountRows[0] : accountRows.find((a) => a.id === selectedID) ?? null;
   const filteredAccounts = useMemo(() => filterAccounts(accountRows, query), [accountRows, query]);
   const selectedAccountIDs = useMemo(() => Object.keys(accountSelection).map(Number).filter((id) => Number.isFinite(id)), [accountSelection]);
+  const selectedProxyAccountIDs = useMemo(() => Object.keys(proxyAccountSelection).map(Number).filter((id) => Number.isFinite(id)), [proxyAccountSelection]);
   const accountsBusy =
     importAccount.isPending ||
     importAccountText.isPending ||
@@ -1043,11 +1057,16 @@ function App() {
                 onGenerate={() => generateProxy.mutate()}
                 onPatch={(id, payload) => patchProxy.mutate({ id, ...payload })}
                 onDelete={(id) => deleteProxy.mutate(id)}
-                selectedAccountIDs={selectedAccountIDs}
+                selectedAccountIDs={selectedProxyAccountIDs}
+                accountSelection={proxyAccountSelection}
+                onAccountSelectionChange={setProxyAccountSelection}
                 onBindAccounts={(proxyID, accountIDs) => bindProxyAccounts.mutate({ account_ids: accountIDs, proxy_id: proxyID })}
                 onGenerateForAccounts={(accountIDs) => bindProxyAccounts.mutate({ account_ids: accountIDs, generate: true })}
                 onDynamicBind={(accountIDs) => bindProxyAccounts.mutate({ account_ids: accountIDs, dynamic: true })}
                 onDynamicRotate={(accountIDs) => bindProxyAccounts.mutate({ account_ids: accountIDs, dynamic: true, rotate: true })}
+                onDynamicVerify={(accountIDs) => bindProxyAccounts.mutate({ account_ids: accountIDs, dynamic: true, verify: true })}
+                onDynamicSuspend={(accountIDs) => bindProxyAccounts.mutate({ account_ids: accountIDs, dynamic: true, suspend: true })}
+                onDynamicResume={(accountIDs) => bindProxyAccounts.mutate({ account_ids: accountIDs, dynamic: true, resume: true })}
                 onDynamicClear={(accountIDs) => bindProxyAccounts.mutate({ account_ids: accountIDs, dynamic: true, clear: true })}
                 onBindingAction={(accountID, action) => proxyBindingAction.mutate({ accountID, action })}
                 onRunMaintenance={() => runProxyMaintenance.mutate()}
@@ -2363,10 +2382,15 @@ function ProxyPanel({
   onPatch,
   onDelete,
   selectedAccountIDs,
+  accountSelection,
+  onAccountSelectionChange,
   onBindAccounts,
   onGenerateForAccounts,
   onDynamicBind,
   onDynamicRotate,
+  onDynamicVerify,
+  onDynamicSuspend,
+  onDynamicResume,
   onDynamicClear,
   onBindingAction,
   onRunMaintenance
@@ -2381,10 +2405,15 @@ function ProxyPanel({
   onPatch: (id: string, payload: { enabled?: boolean; cooldown_seconds?: number; test?: boolean }) => void;
   onDelete: (id: string) => void;
   selectedAccountIDs: number[];
+  accountSelection: RowSelectionState;
+  onAccountSelectionChange: React.Dispatch<React.SetStateAction<RowSelectionState>>;
   onBindAccounts: (proxyID: string, accountIDs: number[]) => void;
   onGenerateForAccounts: (accountIDs: number[]) => void;
   onDynamicBind: (accountIDs: number[]) => void;
   onDynamicRotate: (accountIDs: number[]) => void;
+  onDynamicVerify: (accountIDs: number[]) => void;
+  onDynamicSuspend: (accountIDs: number[]) => void;
+  onDynamicResume: (accountIDs: number[]) => void;
   onDynamicClear: (accountIDs: number[]) => void;
   onBindingAction: (accountID: number, action: string) => void;
   onRunMaintenance: () => void;
@@ -2392,9 +2421,11 @@ function ProxyPanel({
   const rows = snapshot?.entries ?? [];
   const bindingRows = snapshot?.bindings ?? [];
   const accountMap = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
+  const bindingMap = useMemo(() => new Map(bindingRows.map((binding) => [binding.account_id, binding])), [bindingRows]);
   const [deleteTarget, setDeleteTarget] = useState<ProxyEntry | null>(null);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [bindingSorting, setBindingSorting] = useState<SortingState>([]);
+  const [accountSorting, setAccountSorting] = useState<SortingState>([]);
   const columns = useMemo<ColumnDef<ProxyEntry>[]>(
     () => [
       {
@@ -2568,32 +2599,176 @@ function ProxyPanel({
   React.useEffect(() => {
     bindingTable.setPageSize(10);
   }, [bindingTable]);
+  const accountColumns = useMemo<ColumnDef<DebugAccount>[]>(
+    () => [
+      {
+        id: "select",
+        header: ({ table }) => (
+          <input
+            type="checkbox"
+            aria-label="选择当前页账号"
+            checked={table.getIsAllPageRowsSelected()}
+            ref={(node) => {
+              if (node) node.indeterminate = table.getIsSomePageRowsSelected();
+            }}
+            onChange={table.getToggleAllPageRowsSelectedHandler()}
+          />
+        ),
+        cell: ({ row }) => (
+          <input
+            type="checkbox"
+            aria-label={`选择账号 ${row.original.id}`}
+            checked={row.getIsSelected()}
+            ref={(node) => {
+              if (node) node.indeterminate = row.getIsSomeSelected();
+            }}
+            onClick={(event) => event.stopPropagation()}
+            onChange={row.getToggleSelectedHandler()}
+          />
+        ),
+        enableSorting: false
+      },
+      { accessorKey: "id", header: "ID" },
+      {
+        accessorKey: "email",
+        header: "账号",
+        cell: ({ row }) => <span className="wideCell">{row.original.email || "未知"}</span>
+      },
+      {
+        id: "account_status",
+        header: "账号状态",
+        cell: ({ row }) => (
+          <span className={`pill ${row.original.banned ? "bad" : row.original.enabled ? "good" : "warn"}`}>
+            {row.original.banned ? "封禁" : row.original.enabled ? "启用" : "停用"}
+          </span>
+        )
+      },
+      {
+        id: "binding_status",
+        header: "绑定状态",
+        cell: ({ row }) => {
+          const binding = bindingMap.get(row.original.id);
+          return <span className={`pill ${bindingTone(binding?.status)}`}>{binding ? bindingStatusText(binding.status) : "未绑定"}</span>;
+        }
+      },
+      {
+        id: "egress",
+        header: "出口 IP",
+        cell: ({ row }) => {
+          const binding = bindingMap.get(row.original.id);
+          return (
+            <span className="wideCell">
+              {binding?.egress_ip || "-"} {binding ? formatLocation(binding) : ""}
+            </span>
+          );
+        }
+      },
+      {
+        id: "remaining",
+        header: "剩余",
+        cell: ({ row }) => formatDuration(bindingMap.get(row.original.id)?.remaining_ms)
+      },
+      {
+        id: "static_proxy",
+        header: "静态代理",
+        cell: ({ row }) => (row.original.proxy_url_set || row.original.proxy_url ? "已设置" : "-")
+      },
+      {
+        id: "error",
+        header: "错误",
+        cell: ({ row }) => <span className="wideCell">{bindingMap.get(row.original.id)?.verify_error || "-"}</span>
+      }
+    ],
+    [bindingMap]
+  );
+  const accountTable = useReactTable({
+    data: accounts,
+    columns: accountColumns,
+    state: { sorting: accountSorting, rowSelection: accountSelection },
+    onSortingChange: setAccountSorting,
+    onRowSelectionChange: onAccountSelectionChange,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getRowId: (row) => String(row.id)
+  });
+  React.useEffect(() => {
+    accountTable.setPageSize(10);
+  }, [accountTable]);
   return (
     <div className="manager">
       <StatusList
         rows={[
           ["账号绑定", snapshot?.account_binding ? "开启" : "关闭"],
           ["自动绑定新账号", snapshot?.auto_bind_new_accounts ? "开启" : "关闭"],
+          ["续绑阈值", formatDuration(snapshot?.renew_before_ms)],
+          ["代理 TTL", `${snapshot?.ttl_minutes ?? "-"} 分钟`],
           ["已绑定 / 未绑定", `${snapshot?.summary?.bound ?? 0} / ${snapshot?.summary?.unbound ?? 0}`],
           ["即将过期", String(snapshot?.summary?.expiring_soon ?? 0)],
           ["失败 / 暂停", `${snapshot?.summary?.failed ?? 0} / ${snapshot?.summary?.suspended ?? 0}`],
-          ["维护并发", String(snapshot?.worker_concurrency ?? 0)]
+          ["维护周期 / 并发", `${formatDuration(snapshot?.worker_interval_ms)} / ${snapshot?.worker_concurrency ?? 0}`],
+          ["代理密码", snapshot?.password_set ? "已设置" : "未设置"]
         ]}
       />
+      <div className="proxyNotice">
+        <strong>账号级动态代理</strong>
+        <span>
+          在这里直接勾选账号批量绑定、验证、换 IP、暂停或清除。维护计划会处理失败、过期、快过期绑定；开启“自动绑定新账号”后也会给未绑定的启用账号补绑定。
+        </span>
+      </div>
       <div className="buttonRow">
         <Button className="miniButton" variant="secondary" size="sm" disabled={busy || selectedAccountIDs.length === 0} onClick={() => onDynamicBind(selectedAccountIDs)}>
-          绑定已选账号
+          绑定已选账号 IP
         </Button>
         <Button className="miniButton" variant="secondary" size="sm" disabled={busy || selectedAccountIDs.length === 0} onClick={() => onDynamicRotate(selectedAccountIDs)}>
-          轮换已选账号
+          更新/换 IP
+        </Button>
+        <Button className="miniButton" variant="secondary" size="sm" disabled={busy || selectedAccountIDs.length === 0} onClick={() => onDynamicVerify(selectedAccountIDs)}>
+          验证已选 IP
+        </Button>
+        <Button className="miniButton" variant="secondary" size="sm" disabled={busy || selectedAccountIDs.length === 0} onClick={() => onDynamicSuspend(selectedAccountIDs)}>
+          暂停已选绑定
+        </Button>
+        <Button className="miniButton" variant="secondary" size="sm" disabled={busy || selectedAccountIDs.length === 0} onClick={() => onDynamicResume(selectedAccountIDs)}>
+          恢复已选绑定
         </Button>
         <Button className="miniButton" variant="secondary" size="sm" disabled={busy || selectedAccountIDs.length === 0} onClick={() => onDynamicClear(selectedAccountIDs)}>
-          清除已选绑定
+          解绑已选账号
         </Button>
         <Button className="miniButton" variant="secondary" size="sm" disabled={busy} onClick={onRunMaintenance}>
-          执行维护计划
+          自动检测并续绑
         </Button>
       </div>
+      <div className="selectionHint">
+        已选择 {selectedAccountIDs.length} 个账号；批量操作只作用于下面表格里勾选的账号。
+      </div>
+      {!accounts.length ? (
+        <div className="empty compactEmpty">暂无账号，先导入账号后再绑定动态代理。</div>
+      ) : (
+        <div className="tableWrap compactTable">
+          <table>
+            <thead>
+              {accountTable.getHeaderGroups().map((headerGroup) => (
+                <tr key={headerGroup.id}>
+                  {headerGroup.headers.map((header) => (
+                    <SortableTH key={header.id} header={header} />
+                  ))}
+                </tr>
+              ))}
+            </thead>
+            <tbody>
+              {accountTable.getRowModel().rows.map((row) => (
+                <tr key={row.id}>
+                  {row.getVisibleCells().map((cell) => (
+                    <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <TablePager table={accountTable} total={accounts.length} />
+        </div>
+      )}
       {!bindingRows.length ? (
         <div className="empty compactEmpty">暂无账号级动态绑定。开启账号绑定后，可对选中的账号执行绑定或等待维护任务自动处理。</div>
       ) : (

@@ -1646,10 +1646,14 @@ func dashboardProxyBindAccountsAPI(w http.ResponseWriter, r *http.Request, am *a
 		AccountIDs []int  `json:"account_ids"`
 		ProxyID    string `json:"proxy_id"`
 		ProxyURL   string `json:"proxy_url"`
+		Action     string `json:"action"`
 		Clear      bool   `json:"clear"`
 		Generate   bool   `json:"generate"`
 		Rotate     bool   `json:"rotate"`
 		Dynamic    bool   `json:"dynamic"`
+		Verify     bool   `json:"verify"`
+		Suspend    bool   `json:"suspend"`
+		Resume     bool   `json:"resume"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request: "+err.Error())
@@ -1657,6 +1661,53 @@ func dashboardProxyBindAccountsAPI(w http.ResponseWriter, r *http.Request, am *a
 	}
 	if len(body.AccountIDs) == 0 {
 		writeJSONError(w, http.StatusBadRequest, "account_ids required")
+		return
+	}
+	if body.Dynamic {
+		if pp == nil {
+			writeJSONError(w, http.StatusNotFound, "proxy manager unavailable")
+			return
+		}
+		action := strings.ToLower(strings.TrimSpace(body.Action))
+		switch {
+		case body.Clear:
+			action = "clear"
+		case body.Rotate:
+			action = "rotate"
+		case body.Verify:
+			action = "verify"
+		case body.Suspend:
+			action = "suspend"
+		case body.Resume:
+			action = "resume"
+		case action == "":
+			action = "bind"
+		}
+		if action != "bind" && action != "rotate" && action != "verify" && action != "clear" && action != "suspend" && action != "resume" {
+			writeJSONError(w, http.StatusBadRequest, "unknown dynamic proxy action")
+			return
+		}
+		results := []any{}
+		updated := 0
+		failed := 0
+		for _, id := range uniqueInts(body.AccountIDs) {
+			result := dashboardRunProxyBindingAction(r.Context(), am, pp, id, action, true)
+			if ok, _ := result["success"].(bool); ok {
+				updated++
+			} else {
+				failed++
+			}
+			results = append(results, result)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":       failed == 0,
+			"action":        action,
+			"updated":       updated,
+			"failed":        failed,
+			"dynamic_bound": updated,
+			"results":       results,
+			"proxy":         dashboardProxySnapshot(pp),
+		})
 		return
 	}
 	proxyURL := strings.TrimSpace(body.ProxyURL)
@@ -1677,31 +1728,6 @@ func dashboardProxyBindAccountsAPI(w http.ResponseWriter, r *http.Request, am *a
 	dynamicBound := 0
 	for _, id := range body.AccountIDs {
 		if id <= 0 {
-			continue
-		}
-		if body.Dynamic {
-			if body.Clear {
-				if _, err := pp.ClearAccount(id); err != nil {
-					writeJSONError(w, http.StatusInternalServerError, err.Error())
-					return
-				}
-				clearAccountAvailabilityAfterProxyChange(am, id, "dynamic_proxy_cleared")
-				updated++
-				continue
-			}
-			var err error
-			if body.Rotate {
-				_, err = pp.RotateAccount(r.Context(), id, true)
-			} else {
-				_, err = pp.BindAccount(r.Context(), id, true)
-			}
-			if err != nil {
-				writeJSONError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			clearAccountAvailabilityAfterProxyChange(am, id, "dynamic_proxy_bound")
-			dynamicBound++
-			updated++
 			continue
 		}
 		nextProxyURL := proxyURL

@@ -46,7 +46,7 @@
 - [x] Models 页面 credit 字段已迁移。
 - [x] Account proxy 基础已完成：Dashboard 可设置账号 proxy，Direct 主链路按账号代理出站。
 - [x] Global proxy 基础已完成：`proxy.default` / env 可作为 Direct 默认出站代理，账号 proxy 优先。
-- [x] Proxy 页面增强已完成：dynamic proxy、测试、轮换、失败原因、SQLite 持久化、provider-specific 代理生成、账号级动态绑定表、绑定/轮换/验证/暂停/恢复/清除、批量绑定/轮换/清除、维护任务入口。
+- [x] Proxy 页面增强已完成：dynamic proxy、测试、轮换、失败原因、SQLite 持久化、provider-specific 代理生成、账号级动态绑定表、代理页独立账号勾选、绑定/轮换/验证/暂停/恢复/清除、批量绑定/轮换/验证/暂停/恢复/解绑、维护任务入口。
 - [x] Requests 基础视图已完成：最近请求、stream、重试、usage、latency、错误分类。
 - [x] Logs 基础接口已完成：`/dashboard/api/logs` 返回最近请求和调度事件。
 - [x] Logs 增强已完成：`/dashboard/api/logs/stream` SSE 流、CSV/JSON/NDJSON 导出、Dashboard 和 API 过滤。
@@ -197,7 +197,7 @@
 - [x] 登录失败 IP lockout 已实现：Dashboard/Admin 认证失败按 IP 计数，5 次失败后 30 分钟锁定。
 - [x] 敏感字段脱敏已增强：Dashboard/Admin/debug 账号响应不返回原始 token，账号 proxy password 也只返回 masked URL；Direct 运行态仍使用数据库原始 proxy。
 - [x] 日志/错误面脱敏已完成：请求事件、SQLite `request_events`、Dashboard logs stream/export、OpenAI/Anthropic/Responses 流式错误、Direct debug stats、scheduler event、proxy last_error、health last_error 都会脱敏 token、Authorization/Cookie、JWT、AWS key、邮箱和代理密码。
-- [x] dynamic proxy 已实现 Node 核心账号绑定生命周期：Dashboard API 可增删/启停/测试代理池，账号级 bind/rotate/verify/clear/suspend/resume，active binding 优先于静态账号代理，过期绑定自动标记 expired，运行时代理失败会标记 failed 并可自动轮换，worker 按 failed/expired、expiring soon、unbound 优先级维护，SQLite 持久化，provider-specific 生成；代理测试目标默认拒绝私网 URL，避免把测试器变成 SSRF 入口。
+- [x] dynamic proxy 已实现 Node 核心账号绑定生命周期：Dashboard API 可增删/启停/测试代理池，代理页可直接批量选择账号并 bind/rotate/verify/clear/suspend/resume，active binding 优先于静态账号代理，过期绑定自动标记 expired，运行时代理失败会标记 failed 并可自动轮换，独立后台 worker 按 failed/expired、expiring soon、unbound 优先级维护，SQLite 持久化，provider-specific 生成；代理测试目标默认拒绝私网 URL，避免把测试器变成 SSRF 入口。
 - [x] 代理绑定变更后的可用性隔离已完成：bind/rotate/verify/clear/suspend/resume 和批量动态代理动作会清理该账号旧 cooldown、breaker、recent error、RPM/inflight 状态，避免旧 IP 的限流污染新 IP。
 - [x] Direct client 按账号选择代理出站已实现，健康检查和 CLI 检查也走账号 proxy。
 
@@ -242,7 +242,7 @@
 | Availability worker | 较完整 | 健康 worker + 手动 Direct probe + prune + clear breaker/cooldown + 错误窗口已完成 | 保留人工干预能力，不做 quota-heavy 自动全量 probe | [x] 核心完成 |
 | Dashboard | 静态 HTML | React SPA，账号/模型/可用性/代理/请求/日志/配置均可操作，中文界面，表格排序分页和批量操作已完成 | 后续只补体验细节，不阻塞替代 | [x] 核心完成 |
 | Auth/Admin API | 完整 | HTTP 账号管理、runtime config、model-access、stats/cache、Node Dashboard 兼容别名、关键手动 Availability API 已完成 | OAuth/本机导入/自更新保留 unavailable，避免引入 LS/本机副作用 | [x] 生产核心完成 / [ ] 低价值 legacy 不复刻 |
-| Dynamic proxy | 完整 | account/global/dynamic proxy direct 出站、账号级绑定生命周期、provider-specific 生成、批量绑定/轮换/清除、测试、失败冷却/自动轮换、维护计划、持久化、Dashboard 操作已完成 | 后续可按实际代理商增加模板 | [x] 核心完成 |
+| Dynamic proxy | 完整 | account/global/dynamic proxy direct 出站、账号级绑定生命周期、provider-specific 生成、代理页独立账号选择、批量绑定/轮换/验证/暂停/恢复/解绑、测试、失败冷却/自动轮换、独立后台续绑维护、持久化、Dashboard 操作已完成 | 后续可按实际代理商增加模板 | [x] 核心完成 |
 | Stats/logs/cache | 完整 | SQLite request stats + logs stream/export/filter + reuse cache snapshot/clear 基础 | 持久统计 + Dashboard 展示 | [x] 完成 |
 
 ## 上线验收矩阵

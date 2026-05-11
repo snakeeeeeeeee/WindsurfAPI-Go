@@ -10,7 +10,7 @@ Direct-only Windsurf API proxy written in Go. The production path talks to Winds
 - `GET /v1/models`
 - Claude-only production target, verified around `claude-sonnet-4.6`
 - Account scheduler with cooldown, RPM reservation, quota weighting and optional Redis coordination
-- Dynamic proxy binding and rotation
+- Dynamic proxy binding, verification, rotation, renewal and Dashboard batch control
 - Chinese React Dashboard embedded into the Go binary
 - Docker / docker-compose deployment
 
@@ -90,6 +90,41 @@ Run a real direct chat smoke only when you are ready to spend quota:
 ```bash
 go run ./cmd/direct-smoke -account 1 -model claude-sonnet-4.6 -timeout 45s -probe-api-chat
 ```
+
+## Dynamic Proxy Binding
+
+Configure the provider in `configs/default.yaml` or Dashboard Settings:
+
+```yaml
+proxy:
+  account_binding: true
+  auto_bind_new_accounts: false
+  renew_before_ms: 900000
+  worker_interval_ms: 60000
+  provider: "novproxy"
+  protocol: "http"
+  host: "us.novproxy.io"
+  port: 1000
+  username_template: "xxx-region-{region}-st-{state}-sid-{sid}-t-{ttl}"
+  password: "your-proxy-password"
+  region: "US"
+  state: "New Jersey"
+  ttl_minutes: 120
+```
+
+Dashboard path: `/dashboard/proxy`.
+
+The Proxy page has its own account table. Select accounts there, then use:
+
+- `绑定已选账号 IP`
+- `更新/换 IP`
+- `验证已选 IP`
+- `暂停已选绑定`
+- `恢复已选绑定`
+- `解绑已选账号`
+- `自动检测并续绑`
+
+The background worker runs every `worker_interval_ms` and renews failed, expired and soon-to-expire bindings. If `auto_bind_new_accounts=true`, it also binds enabled accounts that do not have an active binding.
 
 ## Docker
 

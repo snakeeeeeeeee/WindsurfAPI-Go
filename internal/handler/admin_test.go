@@ -1110,6 +1110,63 @@ func TestDashboardDynamicProxyCompatBatchActionsClearAvailability(t *testing.T) 
 	t.Fatal("account not found")
 }
 
+func TestDashboardProxyBindAccountsSupportsBatchDynamicActions(t *testing.T) {
+	verify := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ip":"203.0.113.30","country":"US","region":"NY","city":"New York","org":"AS test"}`))
+	}))
+	defer verify.Close()
+
+	sqliteStore, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "windsurf.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+	am := account.NewManager(sqliteStore)
+	id64, err := am.AddAccount("proxy-batch-go@example.com", "devin-session-token$abc", "u", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := int(id64)
+	pp := proxypool.NewManager(proxypool.Config{
+		DB:               sqliteStore.DB,
+		AccountBinding:   true,
+		TestURL:          verify.URL,
+		AllowPrivate:     true,
+		Host:             "127.0.0.1",
+		Port:             1000,
+		UsernameTemplate: "user-sid-{sid}-ttl-{ttl}",
+		Password:         "secret",
+	})
+	handler := DashboardAPIHandler(am, nil, nil, nil, reusepool.NewPool(), nil, pp)
+
+	actions := []struct {
+		name string
+		body string
+	}{
+		{"bind", fmt.Sprintf(`{"account_ids":[%d],"dynamic":true}`, id)},
+		{"verify", fmt.Sprintf(`{"account_ids":[%d],"dynamic":true,"verify":true}`, id)},
+		{"rotate", fmt.Sprintf(`{"account_ids":[%d],"dynamic":true,"rotate":true}`, id)},
+		{"suspend", fmt.Sprintf(`{"account_ids":[%d],"dynamic":true,"suspend":true}`, id)},
+		{"resume", fmt.Sprintf(`{"account_ids":[%d],"dynamic":true,"resume":true}`, id)},
+		{"clear", fmt.Sprintf(`{"account_ids":[%d],"dynamic":true,"clear":true}`, id)},
+	}
+	for _, action := range actions {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/dashboard/api/proxy/bind-accounts", strings.NewReader(action.body)))
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "secret") || !strings.Contains(rec.Body.String(), `"success":true`) {
+			t.Fatalf("%s status=%d body=%s", action.name, rec.Code, rec.Body.String())
+		}
+	}
+	binding, err := pp.Binding(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding != nil {
+		t.Fatalf("binding should be cleared after batch clear: %+v", binding)
+	}
+}
+
 func testHandlerAccountManager(t *testing.T) *account.Manager {
 	t.Helper()
 	sqliteStore, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "windsurf.db"))

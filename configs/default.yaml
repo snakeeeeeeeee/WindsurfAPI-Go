@@ -65,6 +65,13 @@ proxy:
   allow_private: false
   test_url: "https://ipinfo.io/json"
   cooldown_seconds: 120
+  account_binding: true
+  auto_bind_new_accounts: false
+  renew_before_ms: 900000
+  max_bind_retries: 3
+  worker_interval_ms: 60000
+  worker_batch_size: 20
+  worker_concurrency: 3
   provider: "novproxy"
   protocol: "http"
   host: "us.novproxy.io"

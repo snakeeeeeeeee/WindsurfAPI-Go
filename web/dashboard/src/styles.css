@@ -759,6 +759,34 @@ td {
   min-height: 72px;
 }
 
+.proxyNotice,
+.selectionHint {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.proxyNotice {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.proxyNotice strong {
+  font-size: 13px;
+}
+
+.proxyNotice span,
+.selectionHint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.selectionHint {
+  padding: 9px 12px;
+}
+
 .tablePager {
   min-height: 42px;
   margin-top: 10px;
