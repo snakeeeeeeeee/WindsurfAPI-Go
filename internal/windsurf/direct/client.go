@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -65,6 +64,7 @@ type Client struct {
 	defaultProxyURL string
 	allowPrivate    bool
 	nativePrompts   bool
+	toolMode        ToolMode
 
 	mu           sync.Mutex
 	stats        Stats
@@ -120,6 +120,12 @@ func WithNativeChatPrompts(enabled bool) Option {
 	return func(c *Client) { c.nativePrompts = enabled }
 }
 
+func WithToolMode(mode string) Option {
+	return func(c *Client) {
+		c.toolMode = NormalizeToolMode(mode)
+	}
+}
+
 // NewClient returns a cloud direct client.
 func NewClient(opts ...Option) *Client {
 	t := &http2.Transport{
@@ -137,6 +143,7 @@ func NewClient(opts ...Option) *Client {
 		timeout:      defaultTimeout,
 		compress:     true,
 		httpScheme:   "https",
+		toolMode:     ToolModeNative,
 		proxyClients: map[string]*http.Client{},
 	}
 	for _, opt := range opts {
@@ -232,6 +239,7 @@ const (
 	ToolModeNative   ToolMode = "native"
 	ToolModeEmulated ToolMode = "emulated"
 	ToolModeNone     ToolMode = "none"
+	ToolModeAuto     ToolMode = "auto"
 )
 
 type Stats struct {
@@ -247,6 +255,7 @@ type Stats struct {
 	LastTextBytes int       `json:"last_text_bytes,omitempty"`
 	LastLatencyMS int64     `json:"last_latency_ms,omitempty"`
 	LastAt        time.Time `json:"last_at,omitempty"`
+	ToolMode      string    `json:"tool_mode"`
 }
 
 // Snapshot returns debug-safe direct client state.
@@ -257,6 +266,7 @@ func (c *Client) Snapshot() Stats {
 	out.Protocol = "grpc"
 	out.Hosts = append([]string(nil), c.hosts...)
 	out.ProxyClients = len(c.proxyClients)
+	out.ToolMode = string(c.toolMode)
 	return out
 }
 
@@ -515,16 +525,8 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*windsurf.ChatResul
 }
 
 func (c *Client) chatHost(ctx context.Context, host string, req ChatRequest, prompt string) (*windsurf.ChatResult, error) {
-	toolMode := ToolModeForRequest(req.Model, req.Tools, req.ToolChoice, req.Messages)
-	upstreamTools := req.Tools
-	upstreamChoice := req.ToolChoice
-	upstreamDisableParallel := req.DisableParallelToolCalls
-	if toolMode == ToolModeEmulated {
-		prompt = BuildEmulatedToolPrompt(req.Messages, req.Tools, req.ToolChoice)
-		upstreamTools = nil
-		upstreamChoice = nil
-		upstreamDisableParallel = false
-	}
+	toolMode := c.ToolModeForRequest(req.Model, req.Tools, req.ToolChoice, req.Messages)
+	prompt, upstreamTools, upstreamChoice, upstreamDisableParallel := upstreamToolPayload(req, prompt, toolMode)
 	body := buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, prompt, 5, upstreamTools, upstreamChoice, upstreamDisableParallel, c.nativePrompts, req.Messages)
 	frames, err := c.postProtoFramesWithProtocol(ctx, host, getChatMessagePath, body, true, req.ProxyURL)
 	if err != nil {
@@ -622,6 +624,17 @@ func (c *Client) chatHost(ctx context.Context, host string, req ChatRequest, pro
 		return nil, errors.New("GetChatMessage returned no delta_text or delta_tool_calls")
 	}
 	return result, nil
+}
+
+func upstreamToolPayload(req ChatRequest, prompt string, toolMode ToolMode) (string, []ToolDefinition, *ToolChoice, bool) {
+	switch toolMode {
+	case ToolModeEmulated:
+		return BuildEmulatedToolPrompt(req.Messages, req.Tools, req.ToolChoice), nil, nil, false
+	case ToolModeNone:
+		return prompt, nil, nil, false
+	default:
+		return prompt, req.Tools, req.ToolChoice, req.DisableParallelToolCalls
+	}
 }
 
 func (c *Client) recordStats(host, proxyURL, model, err string, textBytes int, latency time.Duration) {
@@ -1247,23 +1260,43 @@ func flattenMessages(messages []windsurf.ChatMessage) string {
 	return tb.latestUserPrompt()
 }
 
-func ToolModeForRequest(model *models.Model, tools []ToolDefinition, choice *ToolChoice, messages []windsurf.ChatMessage) ToolMode {
+func (c *Client) ToolModeForRequest(model *models.Model, tools []ToolDefinition, choice *ToolChoice, messages []windsurf.ChatMessage) ToolMode {
+	mode := ToolModeNative
+	if c != nil {
+		mode = c.toolMode
+	}
+	return ToolModeForRequest(mode, model, tools, choice, messages)
+}
+
+func ToolModeForRequest(mode ToolMode, model *models.Model, tools []ToolDefinition, choice *ToolChoice, messages []windsurf.ChatMessage) ToolMode {
 	if len(tools) == 0 {
 		return ToolModeNone
 	}
 	if choice != nil && strings.EqualFold(strings.TrimSpace(choice.OptionName), "none") {
 		return ToolModeNone
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("WINDSURFAPI_DIRECT_TOOL_MODE")), "emulated") {
+	switch NormalizeToolMode(string(mode)) {
+	case ToolModeEmulated:
 		return ToolModeEmulated
-	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("WINDSURFAPI_DIRECT_TOOL_MODE")), "native") {
+	case ToolModeNative:
 		return ToolModeNative
-	}
-	if model != nil && isOpus47ModelID(model.ID) {
-		return ToolModeEmulated
+	case ToolModeAuto:
+		if model != nil && isOpus47ModelID(model.ID) {
+			return ToolModeEmulated
+		}
 	}
 	return ToolModeNative
+}
+
+func NormalizeToolMode(mode string) ToolMode {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case string(ToolModeEmulated):
+		return ToolModeEmulated
+	case string(ToolModeAuto):
+		return ToolModeAuto
+	default:
+		return ToolModeNative
+	}
 }
 
 func isOpus47ModelID(id string) bool {

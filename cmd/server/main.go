@@ -36,7 +36,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
 	}
-	log.Printf("配置加载完成，端口: %d", cfg.Server.Port)
+	log.Printf("配置加载完成 path=%s port=%d api_keys=%d dashboard_user=%s redis=%s db=%s", *configPath, cfg.Server.Port, len(cfg.Server.APIKeys), cfg.Dashboard.Username, cfg.Redis.Addr, cfg.SQLite.Path)
 
 	sqliteStore, err := store.NewSQLiteStore(cfg.SQLite.Path)
 	if err != nil {
@@ -104,10 +104,12 @@ func main() {
 	if cfg.Proxy.Default != "" {
 		directOpts = append(directOpts, direct.WithDefaultProxyURL(cfg.Proxy.Default))
 	}
+	directOpts = append(directOpts, direct.WithToolMode(cfg.Direct.ToolMode))
 	if cfg.Direct.NativeChatPrompts {
 		directOpts = append(directOpts, direct.WithNativeChatPrompts(true))
 		log.Printf("Direct native chat_message_prompts experiment enabled; keep disabled unless real upstream smoke has validated multi-turn/tool history semantics")
 	}
+	log.Printf("Direct tool mode=%s", cfg.Direct.ToolMode)
 	directClient := direct.NewClient(directOpts...)
 	proxyMgr := proxypool.NewManager(proxypool.Config{
 		Default:           cfg.Proxy.Default,

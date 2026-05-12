@@ -100,6 +100,7 @@ func TestApplyRuntimeDefaultsAppliesEnvOverrides(t *testing.T) {
 	t.Setenv("WINDSURFAPI_DIRECT_HOSTS", "server.one,server.two")
 	t.Setenv("WINDSURFAPI_DIRECT_TIMEOUT_SECONDS", "45")
 	t.Setenv("WINDSURFAPI_DIRECT_NATIVE_CHAT_PROMPTS", "true")
+	t.Setenv("WINDSURFAPI_DIRECT_TOOL_MODE", "emulated")
 	t.Setenv("WINDSURFAPI_SCHEDULER_REDIS_ENABLED", "true")
 	t.Setenv("WINDSURFAPI_SCHEDULER_REDIS_FAIL_CLOSED", "true")
 	t.Setenv("WINDSURFAPI_MAX_INFLIGHT_PER_ACCOUNT", "8")
@@ -133,6 +134,9 @@ func TestApplyRuntimeDefaultsAppliesEnvOverrides(t *testing.T) {
 	}
 	if !cfg.Direct.NativeChatPrompts {
 		t.Fatal("expected direct native chat prompts enabled")
+	}
+	if cfg.Direct.ToolMode != "emulated" {
+		t.Fatalf("direct tool mode=%q", cfg.Direct.ToolMode)
 	}
 	if !cfg.Scheduler.RedisEnabled || !cfg.Scheduler.RedisFailClosed || cfg.Scheduler.MaxInflightPerAccount != 8 {
 		t.Fatalf("scheduler=%+v", cfg.Scheduler)

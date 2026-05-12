@@ -110,15 +110,19 @@ Public model IDs are intentionally small:
 - `claude-haiku-4-5`
 - `claude-haiku-4-5-20251001`
 
-`reasoning_effort` / `output_config.effort` routes Opus 4.7 requests to Windsurf's low/medium/high/xhigh/max UIDs. One Direct-only detail matters for Claude Code/Cline: Windsurf cloud currently returns upstream internal errors for `claude-opus-4-7*` when the request uses native `GetChatMessage.tools` fields. Go keeps the requested Opus 4.7 model, but sends those tool turns through a text tool protocol and parses the model output back into OpenAI/Anthropic/Responses tool calls. Pure text Opus 4.7 requests still use the normal Direct path.
+`reasoning_effort` / `output_config.effort` routes Opus 4.7 requests to Windsurf's low/medium/high/xhigh/max UIDs. Direct tool mode defaults to `native`, which keeps the upstream Claude request shape closest to Windsurf and avoids injecting local tool protocol text into model-fingerprint or conformance tests. If a Claude Code/Cline workload proves that Opus 4.7 native tools fail, switch `direct.tool_mode` to `emulated` for that deployment.
 
-Runtime switches:
+Runtime/config switches:
+
+```yaml
+direct:
+  tool_mode: "native"    # default, best for model fidelity
+  # tool_mode: "emulated"  # text tool protocol compatibility mode
+  # tool_mode: "auto"      # older behavior: Opus 4.7 tools use emulation
+```
 
 ```bash
-# Force all Direct tool requests through text tool emulation.
-WINDSURFAPI_DIRECT_TOOL_MODE=emulated
-
-# Force native upstream tool fields for diagnostics after validating they are stable.
+# Environment override if needed.
 WINDSURFAPI_DIRECT_TOOL_MODE=native
 ```
 

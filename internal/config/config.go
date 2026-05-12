@@ -94,6 +94,7 @@ type DirectConfig struct {
 	Hosts             []string `yaml:"hosts"`
 	TimeoutSeconds    int      `yaml:"timeout_seconds"`
 	NativeChatPrompts bool     `yaml:"native_chat_prompts"`
+	ToolMode          string   `yaml:"tool_mode"`
 }
 
 type HealthConfig struct {
@@ -202,6 +203,7 @@ func Load(path string) (*Config, error) {
 		},
 		Direct: DirectConfig{
 			TimeoutSeconds: 30,
+			ToolMode:       "native",
 		},
 		Health: HealthConfig{
 			Enabled:           true,
@@ -298,6 +300,7 @@ func applyRuntimeDefaults(cfg *Config) {
 	if cfg.Direct.TimeoutSeconds <= 0 {
 		cfg.Direct.TimeoutSeconds = 30
 	}
+	cfg.Direct.ToolMode = normalizeDirectToolMode(cfg.Direct.ToolMode)
 	if cfg.Health.IntervalSeconds <= 0 {
 		cfg.Health.IntervalSeconds = 300
 	}
@@ -391,6 +394,15 @@ func applyRuntimeDefaults(cfg *Config) {
 	}
 }
 
+func normalizeDirectToolMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "emulated", "native", "auto":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "native"
+	}
+}
+
 func applyEnvOverrides(cfg *Config) {
 	if v := getenv("WINDSURFAPI_PORT", "PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -435,6 +447,9 @@ func applyEnvOverrides(cfg *Config) {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.Direct.NativeChatPrompts = b
 		}
+	}
+	if v := getenv("WINDSURFAPI_DIRECT_TOOL_MODE", "DIRECT_TOOL_MODE"); v != "" {
+		cfg.Direct.ToolMode = v
 	}
 	if v := getenv("WINDSURFAPI_HEALTH_ENABLED", "HEALTH_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {

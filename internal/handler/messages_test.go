@@ -332,7 +332,7 @@ func TestMessagesHandlerKeepsOpus47ModelForToolRequests(t *testing.T) {
 	if rec.Header().Get("X-Windsurf-Requested-Model") != "" || rec.Header().Get("X-Windsurf-Served-Model") != "" {
 		t.Fatalf("fallback headers should not be present requested=%q served=%q", rec.Header().Get("X-Windsurf-Requested-Model"), rec.Header().Get("X-Windsurf-Served-Model"))
 	}
-	if rec.Header().Get("X-Windsurf-Tool-Mode") != "emulated" {
+	if rec.Header().Get("X-Windsurf-Tool-Mode") != "native" {
 		t.Fatalf("tool mode header=%q", rec.Header().Get("X-Windsurf-Tool-Mode"))
 	}
 	var resp map[string]any

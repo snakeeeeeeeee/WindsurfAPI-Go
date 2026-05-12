@@ -57,6 +57,7 @@ func main() {
 	if *nativePrompts {
 		opts = append(opts, direct.WithNativeChatPrompts(true))
 	}
+	opts = append(opts, direct.WithToolMode(cfg.Direct.ToolMode))
 	client := direct.NewClient(opts...)
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
@@ -115,10 +116,10 @@ func main() {
 			ToolChoice: choice,
 		})
 		if err != nil {
-			fmt.Printf("DirectChatTools failed model=%s tool_mode=%s elapsed<=%s err=%q\n", model.ID, direct.ToolModeForRequest(model, tools, choice, nil), *timeout+60*time.Second, err.Error())
+			fmt.Printf("DirectChatTools failed model=%s tool_mode=%s elapsed<=%s err=%q\n", model.ID, client.ToolModeForRequest(model, tools, choice, nil), *timeout+60*time.Second, err.Error())
 		} else {
 			fmt.Printf("DirectChatTools ok model=%s tool_mode=%s text=%q thinking=%q tool_calls=%d finish=%s\n",
-				model.ID, direct.ToolModeForRequest(model, tools, choice, nil), truncate(result.Text, 120), truncate(result.Thinking, 80), len(result.ToolCalls), result.FinishReason)
+				model.ID, client.ToolModeForRequest(model, tools, choice, nil), truncate(result.Text, 120), truncate(result.Thinking, 80), len(result.ToolCalls), result.FinishReason)
 			for i, call := range result.ToolCalls {
 				fmt.Printf("tool_call[%d] id=%s name=%s args=%s\n", i, call.ID, call.Name, truncate(call.ArgumentsJSON, 220))
 			}

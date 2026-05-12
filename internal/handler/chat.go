@@ -577,7 +577,7 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 		route = "chat"
 	}
 	if params.Model != nil {
-		log.Printf("req_id=%s route=%s event=direct_chat_shape model=%s tool_mode=%s %s", reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), directRequestShape(params))
+		log.Printf("req_id=%s route=%s event=direct_chat_shape model=%s tool_mode=%s %s", reqID, route, params.Model.ID, directToolMode(dc, params), directRequestShape(params))
 	}
 	shape := directRequestShape(params)
 	toolsDigest := directToolsDigest(params.Tools)
@@ -652,7 +652,7 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 		if params.HTTPWriter != nil {
 			params.HTTPWriter.Header().Set("X-Windsurf-Account-ID", fmt.Sprintf("%d", res.Account.ID))
 			params.HTTPWriter.Header().Set("X-Windsurf-Attempt", fmt.Sprintf("%d", attempt))
-			params.HTTPWriter.Header().Set("X-Windsurf-Tool-Mode", string(direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages)))
+			params.HTTPWriter.Header().Set("X-Windsurf-Tool-Mode", string(directToolMode(dc, params)))
 		}
 		proxyRes := proxypool.Reservation{ProxyURL: res.Account.ProxyURL}
 		if params.ProxyPool != nil {
@@ -748,7 +748,7 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 				}
 			}
 			log.Printf("req_id=%s route=%s event=direct_chat_ok model=%s tool_mode=%s account_id=%d attempt=%d total_ms=%d send_ms=%d reuse_hit=%v usage_in=%d usage_out=%d cache_read=%d tool_call_count=%d",
-				reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), res.Account.ID, attempt, time.Since(start).Milliseconds(), time.Since(sendStarted).Milliseconds(), reuseHit,
+				reqID, route, params.Model.ID, directToolMode(dc, params), res.Account.ID, attempt, time.Since(start).Milliseconds(), time.Since(sendStarted).Milliseconds(), reuseHit,
 				usageIn(result), usageOut(result), usageCacheRead(result), len(result.ToolCalls))
 			responseUsage := buildResponseUsage(params, res.Account.ID, result)
 			if params.UsageOut != nil {
@@ -817,13 +817,22 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 			return nil, http.StatusOK, nil
 		}
 		if !retryableClass(class) || time.Since(start) >= fastSwitchBudget {
-			log.Printf("req_id=%s route=%s event=direct_chat_fail model=%s tool_mode=%s account_id=%d attempt=%d class=%s retry=false total_ms=%d err=%s %s", reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), res.Account.ID, attempt, class, time.Since(start).Milliseconds(), redact.Text(err.Error()), shape)
+			log.Printf("req_id=%s route=%s event=direct_chat_fail model=%s tool_mode=%s account_id=%d attempt=%d class=%s retry=false total_ms=%d err=%s %s", reqID, route, params.Model.ID, directToolMode(dc, params), res.Account.ID, attempt, class, time.Since(start).Milliseconds(), redact.Text(err.Error()), shape)
 			recordRequestEvent(RequestEvent{RequestID: reqID, Route: route, Model: params.Model.ID, CallerKeyHash: callerHash, AccountID: res.Account.ID, Attempt: attempt, Status: "error", HTTPStatus: statusForClass(class), ErrorClass: class, Error: err.Error(), Retry: attempt > 1, Stream: params.Stream, LatencyMS: time.Since(start).Milliseconds(), SendMS: time.Since(sendStarted).Milliseconds(), ToolCallCount: len(params.Tools), ReuseHit: reuseHit, ReuseMissReason: reuseMissReason})
 			return nil, statusForClass(class), err
 		}
-		log.Printf("req_id=%s route=%s event=direct_chat_retry model=%s tool_mode=%s account_id=%d attempt=%d class=%s retry=true total_ms=%d err=%s %s", reqID, route, params.Model.ID, direct.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages), res.Account.ID, attempt, class, time.Since(start).Milliseconds(), redact.Text(err.Error()), shape)
+		log.Printf("req_id=%s route=%s event=direct_chat_retry model=%s tool_mode=%s account_id=%d attempt=%d class=%s retry=true total_ms=%d err=%s %s", reqID, route, params.Model.ID, directToolMode(dc, params), res.Account.ID, attempt, class, time.Since(start).Milliseconds(), redact.Text(err.Error()), shape)
 	}
 	return nil, statusForClass(lastClass), lastErr
+}
+
+func directToolMode(dc directChatClient, params directChatParams) direct.ToolMode {
+	if resolver, ok := dc.(interface {
+		ToolModeForRequest(*models.Model, []direct.ToolDefinition, *direct.ToolChoice, []windsurf.ChatMessage) direct.ToolMode
+	}); ok && resolver != nil {
+		return resolver.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages)
+	}
+	return direct.ToolModeForRequest(direct.ToolModeNative, params.Model, params.Tools, params.ToolChoice, params.Messages)
 }
 
 func directRequestShape(params directChatParams) string {
@@ -845,7 +854,7 @@ func directRequestShape(params directChatParams) string {
 			userBytes += n
 		}
 	}
-	choice := "none"
+	choice := "auto"
 	if params.ToolChoice != nil {
 		switch {
 		case strings.TrimSpace(params.ToolChoice.ToolName) != "":

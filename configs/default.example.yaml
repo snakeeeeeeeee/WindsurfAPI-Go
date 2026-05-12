@@ -32,6 +32,11 @@ direct:
     - "server.codeium.com"
     - "server.self-serve.windsurf.com"
   timeout_seconds: 30
+  # native keeps the upstream Claude request shape closest to Windsurf.
+  # emulated injects a text tool protocol and should only be enabled when
+  # Opus 4.7 native tools are known to fail for a Claude Code/Cline workload.
+  # auto preserves the older behavior: Opus 4.7 tools use emulation.
+  tool_mode: "native"  # native, emulated, or auto
   # Experimental: emit one chat_message_prompt per message instead of only a
   # flattened prompt. Keep disabled until real upstream smoke validates the
   # field semantics for multi-turn/tool history.

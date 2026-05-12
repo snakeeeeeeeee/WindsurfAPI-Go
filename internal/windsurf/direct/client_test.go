@@ -222,20 +222,56 @@ func TestProbeAPIChatResultOKAllowsToolOnly(t *testing.T) {
 	}
 }
 
-func TestToolModeForOpus47UsesEmulationWithoutChangingModel(t *testing.T) {
+func TestToolModeDefaultsToNativeForOpus47WithoutChangingModel(t *testing.T) {
 	model := models.GetModelByID("claude-opus-4-7-xhigh")
 	tools := []ToolDefinition{{Name: "echo_text", SchemaJSON: `{"type":"object"}`}}
-	if got := ToolModeForRequest(model, tools, &ToolChoice{ToolName: "echo_text"}, []windsurf.ChatMessage{{Role: "user", Content: "hi"}}); got != ToolModeEmulated {
+	if got := ToolModeForRequest(ToolModeNative, model, tools, &ToolChoice{ToolName: "echo_text"}, []windsurf.ChatMessage{{Role: "user", Content: "hi"}}); got != ToolModeNative {
 		t.Fatalf("mode=%s", got)
 	}
 	if model.ID != "claude-opus-4-7-xhigh" {
 		t.Fatalf("tool emulation must not mutate or downgrade model: %+v", model)
 	}
-	if got := ToolModeForRequest(models.GetModelByID("claude-opus-4.6"), tools, nil, nil); got != ToolModeNative {
-		t.Fatalf("opus 4.6 should keep native tools, got=%s", got)
+	if got := ToolModeForRequest(ToolModeAuto, model, tools, &ToolChoice{ToolName: "echo_text"}, nil); got != ToolModeEmulated {
+		t.Fatalf("auto mode should emulate Opus 4.7 tools, got=%s", got)
 	}
-	if got := ToolModeForRequest(model, nil, nil, nil); got != ToolModeNone {
+	if got := ToolModeForRequest(ToolModeEmulated, models.GetModelByID("claude-opus-4.6"), tools, nil, nil); got != ToolModeEmulated {
+		t.Fatalf("explicit emulated mode=%s", got)
+	}
+	if got := ToolModeForRequest(ToolModeNative, models.GetModelByID("claude-opus-4.6"), tools, nil, nil); got != ToolModeNative {
+		t.Fatalf("native mode=%s", got)
+	}
+	if got := ToolModeForRequest(ToolModeEmulated, model, tools, &ToolChoice{OptionName: "none"}, nil); got != ToolModeNone {
+		t.Fatalf("tool_choice none mode=%s", got)
+	}
+	if got := ToolModeForRequest(ToolModeEmulated, model, nil, nil, nil); got != ToolModeNone {
 		t.Fatalf("no tools mode=%s", got)
+	}
+}
+
+func TestUpstreamToolPayloadDropsToolsWhenModeNone(t *testing.T) {
+	req := ChatRequest{
+		Messages: []windsurf.ChatMessage{{Role: "user", Content: "answer directly"}},
+		Tools:    []ToolDefinition{{Name: "echo_text", SchemaJSON: `{"type":"object"}`}},
+		ToolChoice: &ToolChoice{
+			OptionName: "none",
+		},
+		DisableParallelToolCalls: true,
+	}
+	prompt, tools, choice, disableParallel := upstreamToolPayload(req, "answer directly", ToolModeNone)
+	if prompt != "answer directly" || len(tools) != 0 || choice != nil || disableParallel {
+		t.Fatalf("prompt=%q tools=%+v choice=%+v disable=%v", prompt, tools, choice, disableParallel)
+	}
+	model := models.GetModelByID("claude-opus-4.6")
+	body := buildAPIGetChatMessageRequestWithMessages("devin-token", model, prompt, 5, tools, choice, disableParallel, false, req.Messages)
+	fields, err := p.ParseFields(body)
+	if err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	if got := p.GetAllFields(fields, 10); len(got) != 0 {
+		t.Fatalf("tool fields should be absent: %d", len(got))
+	}
+	if got := p.GetAllFields(fields, 12); len(got) != 0 {
+		t.Fatalf("tool choice fields should be absent: %d", len(got))
 	}
 }
 
