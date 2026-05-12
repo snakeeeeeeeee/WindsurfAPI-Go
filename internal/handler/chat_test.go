@@ -198,12 +198,12 @@ func TestResponseFormatHintPrependsSystemOnly(t *testing.T) {
 
 func TestOpenAIReasoningPrompt(t *testing.T) {
 	got := openAIReasoningPrompt(ChatCompletionRequest{ReasoningEffort: "high"})
-	if !strings.Contains(got, "high effort") || !strings.Contains(got, "reasoning_content") {
-		t.Fatalf("high effort prompt=%q", got)
+	if got != "" {
+		t.Fatalf("reasoning should route model only, got prompt=%q", got)
 	}
 	got = openAIReasoningPrompt(ChatCompletionRequest{Reasoning: map[string]any{"effort": "medium"}})
-	if !strings.Contains(got, "medium effort") {
-		t.Fatalf("medium effort prompt=%q", got)
+	if got != "" {
+		t.Fatalf("reasoning should not inject prompt text, got=%q", got)
 	}
 	if got := openAIReasoningPrompt(ChatCompletionRequest{ReasoningEffort: "disabled"}); got != "" {
 		t.Fatalf("disabled reasoning should be empty, got=%q", got)
@@ -221,6 +221,24 @@ func TestExecuteOpenAIChatPassesReasoningPrompt(t *testing.T) {
 	}
 	if len(fake.calls) != 1 || fake.calls[0].Thinking != "think harder" {
 		t.Fatalf("thinking not passed calls=%+v", fake.calls)
+	}
+}
+
+func TestChatHandlerDoesNotInjectReasoningPromptText(t *testing.T) {
+	am := testChatAccountManager(t)
+	_, _ = am.AddAccount("first@example.com", "tok-a", "u1", "", "")
+	fake := &fakeDirectChatClient{}
+	handler := ChatCompletionsHandler(nil, am, fake, nil, nil)
+	body := `{"model":"claude-opus-4-7","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(fake.calls) != 1 || fake.calls[0].Thinking != "" {
+		t.Fatalf("thinking prompt leaked calls=%+v", fake.calls)
 	}
 }
 

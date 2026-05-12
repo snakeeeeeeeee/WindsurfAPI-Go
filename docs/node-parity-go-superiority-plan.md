@@ -89,9 +89,9 @@
 - [x] OpenAI header 基础对齐已实现：`openai-model`、`openai-processing-ms`、`openai-version`。
 - [x] Anthropic header 基础对齐已实现：`request-id`、`anthropic-model`。
 - [x] OpenAI `response_format=json_object/json_schema` 已兼容：转换为仅本次请求生效的 system JSON 输出提示，不污染历史消息。
-- [x] OpenAI `reasoning_effort` / `reasoning.effort` 已兼容：请求侧转成 Direct thinking 提示，非流响应输出 `reasoning_content`，流式响应输出 `delta.reasoning_content`。
+- [x] OpenAI `reasoning_effort` / `reasoning.effort` 已兼容：请求侧只做模型路由，不再把本地 thinking 提示注入上游 prompt；若上游返回 thinking，非流响应输出 `reasoning_content`，流式响应输出 `delta.reasoning_content`。
 - [x] Anthropic `output_config.format` 已兼容：`json_object/json_schema` 转换为本次请求 system JSON 输出提示。
-- [x] Anthropic `output_config.effort` 已兼容：`low/medium/high` 映射到 Direct thinking 提示预算，显式 `thinking` 请求优先。
+- [x] Anthropic `output_config.effort` 已兼容：`low/medium/high` 参与模型路由和 usage 策略，不再把本地 thinking 提示注入上游 prompt，显式 `thinking` 请求优先。
 - [x] Anthropic `cache_control` 基础兼容已完成：识别 tools/system/messages/top-level 的 ephemeral marker，不泄漏到 Direct transcript，并用 `ttl:"1h"` 调整 reuse TTL 和 Anthropic usage cache split。
 - [x] Anthropic server-side tools 安全剪枝已完成：`web_search_20250305`、`code_execution_20250522`、`advisor_20260301` 不伪造成普通 function tool，相关 `tool_choice` 会被剪掉。
 - [x] Anthropic Claude Code `Read` tool_result stub 保护已完成：超大文件/缓存未变更/截断 stub 会加安全注释，避免模型误判为完整文件内容；真实带行号文件体不误标。
@@ -133,7 +133,7 @@
 - [x] Responses API 已支持 string input。
 - [x] Responses API 已支持 message item、input_text、output_text、function_call、function_call_output、custom_tool_call、custom_tool_call_output 基础转换。
 - [x] Responses API 已支持 reasoning output item 基础转换：Direct `Thinking` 会作为 `output[].type="reasoning"` 的 summary 返回，流式输出包含 reasoning summary delta/done。
-- [x] Responses `reasoning.effort` 已兼容：请求侧转成 Direct thinking 提示，不再静默忽略客户端 reasoning 配置。
+- [x] Responses `reasoning.effort` 已兼容：请求侧参与模型路由，不再静默忽略客户端 reasoning 配置，也不再注入本地 thinking prompt。
 - [x] Responses stream 已支持 text delta、text item done、tool call delta、function-call arguments done、completed 基础事件。
 - [x] Anthropic Messages 已支持 `system` string 和部分 content blocks。
 - [x] Anthropic Messages 已支持 `tool_use`、`tool_result` 基础转换。
@@ -154,7 +154,7 @@
 - [x] 账号级 blocked models 已实现，并纳入调度过滤。
 - [x] Dashboard/API 已支持更新账号级 blocked models。
 - [x] Dashboard/API 全局更新模型可见性已实现。
-- [x] Anthropic `thinking` 策略基础已完成：请求侧解析 enabled/disabled/budget，Direct prompt 注入 thinking 指令，响应侧输出 thinking block / thinking_delta。
+- [x] Anthropic `thinking` 策略基础已完成：请求侧解析 enabled/disabled/budget 并做模型路由，不再污染 Direct prompt；响应侧输出上游 thinking block / thinking_delta。
 - [x] strict reuse 绑定同账号和账号不可用返回 429 的 fake 验收已完成。
 - [x] usage/cache 统计展示基础增强已完成：usage 汇总、cache read、reuse hit、账号分布、延迟桶。
 - [x] usage/cache 响应字段基础对齐已完成：真实解析到 `cache_read/cache_write` 时，OpenAI/Responses 输出 `cache_read_input_tokens`、`cache_creation_input_tokens`，Anthropic 输出 cache sibling 字段和 `cache_creation` split；未知值仍为 0。

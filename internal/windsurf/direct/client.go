@@ -256,6 +256,10 @@ type Stats struct {
 	LastLatencyMS int64     `json:"last_latency_ms,omitempty"`
 	LastAt        time.Time `json:"last_at,omitempty"`
 	ToolMode      string    `json:"tool_mode"`
+
+	ToolFallbacks      uint64    `json:"tool_fallbacks"`
+	LastToolFallback   string    `json:"last_tool_fallback,omitempty"`
+	LastToolFallbackAt time.Time `json:"last_tool_fallback_at,omitempty"`
 }
 
 // Snapshot returns debug-safe direct client state.
@@ -526,9 +530,14 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*windsurf.ChatResul
 
 func (c *Client) chatHost(ctx context.Context, host string, req ChatRequest, prompt string) (*windsurf.ChatResult, error) {
 	toolMode := c.ToolModeForRequest(req.Model, req.Tools, req.ToolChoice, req.Messages)
-	prompt, upstreamTools, upstreamChoice, upstreamDisableParallel := upstreamToolPayload(req, prompt, toolMode)
-	body := buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, prompt, 5, upstreamTools, upstreamChoice, upstreamDisableParallel, c.nativePrompts, req.Messages)
+	upstreamPrompt, upstreamTools, upstreamChoice, upstreamDisableParallel := upstreamToolPayload(req, prompt, toolMode)
+	body := buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, upstreamPrompt, 5, upstreamTools, upstreamChoice, upstreamDisableParallel, c.nativePrompts, req.Messages)
 	frames, err := c.postProtoFramesWithProtocol(ctx, host, getChatMessagePath, body, true, req.ProxyURL)
+	if err != nil && shouldFallbackNativeToolsToPlain(req, toolMode, err) {
+		c.recordToolFallback(host, req.ProxyURL, req.Model.ID, "opus47_native_auto_tools_internal_error")
+		body = buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, prompt, 5, nil, nil, false, c.nativePrompts, req.Messages)
+		frames, err = c.postProtoFramesWithProtocol(ctx, host, getChatMessagePath, body, true, req.ProxyURL)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -652,6 +661,17 @@ func (c *Client) recordStats(host, proxyURL, model, err string, textBytes int, l
 	} else {
 		c.stats.Failures++
 	}
+}
+
+func (c *Client) recordToolFallback(host, proxyURL, model, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stats.LastHost = host
+	c.stats.LastProxy = maskProxyURL(c.effectiveProxyURL(proxyURL))
+	c.stats.LastModel = model
+	c.stats.ToolFallbacks++
+	c.stats.LastToolFallback = reason
+	c.stats.LastToolFallbackAt = time.Now()
 }
 
 // ProbeCascade tries the LS Cascade RPC names directly against the cloud host.
@@ -1302,6 +1322,28 @@ func NormalizeToolMode(mode string) ToolMode {
 func isOpus47ModelID(id string) bool {
 	id = strings.ToLower(strings.TrimSpace(id))
 	return strings.HasPrefix(id, "claude-opus-4-7")
+}
+
+func shouldFallbackNativeToolsToPlain(req ChatRequest, toolMode ToolMode, err error) bool {
+	if toolMode != ToolModeNative || err == nil || len(req.Tools) == 0 || req.Model == nil || !isOpus47ModelID(req.Model.ID) {
+		return false
+	}
+	if toolChoiceMode(req.ToolChoice) != "auto" {
+		return false
+	}
+	if hasToolHistory(req.Messages) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "internal error")
+}
+
+func hasToolHistory(messages []windsurf.ChatMessage) bool {
+	for _, msg := range messages {
+		if len(msg.ToolCalls) > 0 || strings.TrimSpace(msg.ToolCallID) != "" || strings.EqualFold(strings.TrimSpace(msg.Role), "tool") {
+			return true
+		}
+	}
+	return false
 }
 
 func BuildEmulatedToolPrompt(messages []windsurf.ChatMessage, tools []ToolDefinition, choice *ToolChoice) string {

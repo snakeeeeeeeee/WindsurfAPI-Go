@@ -690,13 +690,7 @@ func anthropicThinkingConfigFromRequest(v any) (anthropicThinkingConfig, error) 
 }
 
 func anthropicThinkingPrompt(cfg anthropicThinkingConfig) string {
-	if !cfg.Enabled {
-		return ""
-	}
-	if cfg.Budget > 0 {
-		return fmt.Sprintf("Anthropic thinking mode is enabled. Use private reasoning as needed, with an approximate budget of %d thinking tokens. Return any upstream thinking in the thinking channel when available.", cfg.Budget)
-	}
-	return "Anthropic thinking mode is enabled. Use private reasoning as needed and return any upstream thinking in the thinking channel when available."
+	return ""
 }
 
 func mergeAnthropicOutputConfigEffort(cfg anthropicThinkingConfig, outputConfig any) anthropicThinkingConfig {

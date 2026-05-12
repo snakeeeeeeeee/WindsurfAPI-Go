@@ -203,7 +203,7 @@ func TestAnthropicThinkingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Enabled || cfg.Budget != 1024 || !strings.Contains(anthropicThinkingPrompt(cfg), "1024") {
+	if !cfg.Enabled || cfg.Budget != 1024 || anthropicThinkingPrompt(cfg) != "" {
 		t.Fatalf("cfg=%+v prompt=%q", cfg, anthropicThinkingPrompt(cfg))
 	}
 	cfg, err = anthropicThinkingConfigFromRequest(map[string]any{"type": "disabled"})
@@ -359,6 +359,9 @@ func TestMessagesHandlerRoutesThinkingModel(t *testing.T) {
 	}
 	if len(fake.calls) != 1 || fake.calls[0].Model.ID != "claude-sonnet-4.6-thinking" {
 		t.Fatalf("routed model calls=%+v", fake.calls)
+	}
+	if fake.calls[0].Thinking != "" {
+		t.Fatalf("thinking prompt leaked: %q", fake.calls[0].Thinking)
 	}
 }
 

@@ -1,6 +1,7 @@
 package direct
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +10,10 @@ import (
 	p "github.com/zhangyu/windsurfapi-go/internal/proto"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
 )
+
+func errInternal() error {
+	return errors.New("an internal error occurred")
+}
 
 func TestNormalizeUserStatusQuota(t *testing.T) {
 	status := normalizeUserStatus(map[string]any{
@@ -272,6 +277,61 @@ func TestUpstreamToolPayloadDropsToolsWhenModeNone(t *testing.T) {
 	}
 	if got := p.GetAllFields(fields, 12); len(got) != 0 {
 		t.Fatalf("tool choice fields should be absent: %d", len(got))
+	}
+}
+
+func TestNativeOpus47AutoToolsFallbacksToPlainOnInternalError(t *testing.T) {
+	req := ChatRequest{
+		APIKey: "devin-token",
+		Model:  models.GetModelByID("claude-opus-4-7-medium"),
+		Messages: []windsurf.ChatMessage{{
+			Role:    "user",
+			Content: "answer directly",
+		}},
+		Tools: []ToolDefinition{{
+			Name:       "echo_text",
+			SchemaJSON: `{"type":"object"}`,
+		}},
+	}
+	if !shouldFallbackNativeToolsToPlain(req, ToolModeNative, errInternal()) {
+		t.Fatal("expected plain fallback for Opus 4.7 native auto tools")
+	}
+	prompt := flattenMessages(req.Messages)
+	nativePrompt, nativeTools, nativeChoice, nativeDisable := upstreamToolPayload(req, prompt, ToolModeNative)
+	nativeBody := buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, nativePrompt, 5, nativeTools, nativeChoice, nativeDisable, false, req.Messages)
+	nativeFields, err := p.ParseFields(nativeBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(p.GetAllFields(nativeFields, 10)); got != 1 {
+		t.Fatalf("native tools=%d", got)
+	}
+	plainBody := buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, prompt, 5, nil, nil, false, false, req.Messages)
+	plainFields, err := p.ParseFields(plainBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(p.GetAllFields(plainFields, 10)); got != 0 {
+		t.Fatalf("plain tools=%d", got)
+	}
+}
+
+func TestNativeOpus47ForcedToolDoesNotFallbackToPlain(t *testing.T) {
+	req := ChatRequest{
+		APIKey: "devin-token",
+		Model:  models.GetModelByID("claude-opus-4-7-medium"),
+		Messages: []windsurf.ChatMessage{{
+			Role:    "user",
+			Content: "call tool",
+		}},
+		Tools: []ToolDefinition{{
+			Name:       "echo_text",
+			SchemaJSON: `{"type":"object"}`,
+		}},
+		ToolChoice: &ToolChoice{ToolName: "echo_text"},
+	}
+	if shouldFallbackNativeToolsToPlain(req, ToolModeNative, errInternal()) {
+		t.Fatal("forced tools must not fall back to plain text")
 	}
 }
 

@@ -134,6 +134,10 @@ type DirectSnapshot = {
   last_model?: string;
   last_error?: string;
   last_latency_ms?: number;
+  tool_mode?: string;
+  tool_fallbacks?: number;
+  last_tool_fallback?: string;
+  last_tool_fallback_at?: string;
 };
 
 type ProxyEntry = {
@@ -1358,6 +1362,9 @@ function DirectStatus({ direct }: { direct: DirectSnapshot | undefined }) {
         ["代理客户端", String(direct?.proxy_clients ?? 0)],
         ["最近上游", direct?.last_host || "无"],
         ["最近代理", direct?.last_proxy || "无"],
+        ["工具模式", direct?.tool_mode || "native"],
+        ["工具保真降级", String(direct?.tool_fallbacks ?? 0)],
+        ["最近降级原因", direct?.last_tool_fallback || "无"],
         ["失败次数", String(direct?.failures ?? 0)],
         ["成功次数", String(direct?.successes ?? 0)],
         ["最近延迟", `${direct?.last_latency_ms ?? 0} ms`],

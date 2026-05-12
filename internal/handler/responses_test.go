@@ -114,7 +114,7 @@ func TestResponsesTextFormatHint(t *testing.T) {
 }
 
 func TestResponsesReasoningPrompt(t *testing.T) {
-	if got := responsesReasoningPrompt(map[string]any{"effort": "high"}); !strings.Contains(got, "high effort") {
+	if got := responsesReasoningPrompt(map[string]any{"effort": "high"}); got != "" {
 		t.Fatalf("prompt=%q", got)
 	}
 	if got := responsesReasoningPrompt(map[string]any{"effort": "none"}); got != "" {
@@ -137,6 +137,9 @@ func TestResponsesHandlerRoutesReasoningEffortModel(t *testing.T) {
 	}
 	if len(fake.calls) != 1 || fake.calls[0].Model.ID != "claude-opus-4-7-max" {
 		t.Fatalf("routed model calls=%+v", fake.calls)
+	}
+	if fake.calls[0].Thinking != "" {
+		t.Fatalf("reasoning prompt leaked: %q", fake.calls[0].Thinking)
 	}
 }
 

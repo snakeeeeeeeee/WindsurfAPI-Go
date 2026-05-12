@@ -418,22 +418,7 @@ func responsesTextFormatHint(text any) string {
 }
 
 func responsesReasoningPrompt(reasoning any) string {
-	effort := responsesReasoningEffort(reasoning)
-	if effort == "" {
-		return ""
-	}
-	switch effort {
-	case "none", "off", "disabled", "false":
-		return ""
-	case "low":
-		return "Responses reasoning is requested with low effort. Use private reasoning as needed and return any upstream thinking in the reasoning output when available."
-	case "medium":
-		return "Responses reasoning is requested with medium effort. Use private reasoning as needed and return any upstream thinking in the reasoning output when available."
-	case "high", "xhigh", "max":
-		return "Responses reasoning is requested with high effort. Use private reasoning as needed and return any upstream thinking in the reasoning output when available."
-	default:
-		return "Responses reasoning is requested. Use private reasoning as needed and return any upstream thinking in the reasoning output when available."
-	}
+	return ""
 }
 
 func responsesReasoningEffort(reasoning any) string {
