@@ -14,7 +14,7 @@ services:
     depends_on:
       - windsurfapi-go-redis
     ports:
-      - "3456:3456"
+      - "13456:3456"
     volumes:
       - ./data:/app/data
       - type: bind
