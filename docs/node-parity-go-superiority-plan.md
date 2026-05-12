@@ -162,6 +162,8 @@
 - [x] Responses 连续 `function_call` 历史聚合已完成：连续多个 tool call 会合并为同一个 assistant tool_calls turn，再遇到 tool output/message 时 flush，避免破坏多工具调用历史。
 - [x] tool_choice 剪枝已完成：当 server-side/unsupported tool 被安全丢弃或当前工具列表为空时，命名 `tool_choice` 不再继续指向不存在的工具，避免上游 400/循环错误。
 - [x] usage/cache 真实审计基础已验证：Claude Code 真实会话返回 `cache_creation_input_tokens` / `cache_creation.ephemeral_5m_input_tokens`，Go Anthropic 响应能透传该类 usage 字段；未知字段仍不伪造。
+- [x] Opus 4.7 Direct 首轮工具保护已完成：首轮 `tools + tool_choice=auto` native internal error 会降级为纯文本 native 重试，并在 `/debug/direct`/Dashboard 记录 `tool_fallbacks`。
+- [ ] Opus 4.7 Direct 工具历史根治仍在验证：工具续轮不再自动降级 emulated，已改为复用 Direct `session_id/cascade_id` 并保留 native 形态；还需要小流量真实 smoke 确认上游是否接受该续写形态。
 
 ## P3：Admin API 与 Dashboard 后端
 

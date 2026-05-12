@@ -654,6 +654,16 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 			Tools:        params.Tools,
 			ToolChoice:   params.ToolChoice,
 		}
+		if reuseEntry != nil {
+			req.CascadeID = reuseEntry.CascadeID
+			req.SessionID = reuseEntry.SessionID
+		}
+		if needsDirectConversationIDs(params) && req.SessionID == "" {
+			req.SessionID = windsurf.NewUUID()
+		}
+		if needsDirectConversationIDs(params) && req.CascadeID == "" {
+			req.CascadeID = windsurf.NewUUID()
+		}
 		if params.ParallelToolCalls != nil && !*params.ParallelToolCalls {
 			req.DisableParallelToolCalls = true
 		}
@@ -718,12 +728,16 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 					entry = &reusepool.Entry{
 						AccountID:  res.Account.ID,
 						APIKeyHash: reusepool.APIKeyHash(res.Account.FirebaseToken),
+						CascadeID:  req.CascadeID,
+						SessionID:  req.SessionID,
 						ModelID:    params.Model.ID,
 						CallerKey:  params.CallerKey,
 					}
 				} else {
 					entry.AccountID = res.Account.ID
 					entry.APIKeyHash = reusepool.APIKeyHash(res.Account.FirebaseToken)
+					entry.CascadeID = req.CascadeID
+					entry.SessionID = req.SessionID
 					entry.ModelID = params.Model.ID
 					entry.CallerKey = params.CallerKey
 				}
@@ -818,6 +832,19 @@ func directToolMode(dc directChatClient, params directChatParams) direct.ToolMod
 		return resolver.ToolModeForRequest(params.Model, params.Tools, params.ToolChoice, params.Messages)
 	}
 	return direct.ToolModeForRequest(direct.ToolModeNative, params.Model, params.Tools, params.ToolChoice, params.Messages)
+}
+
+func needsDirectConversationIDs(params directChatParams) bool {
+	return params.StrictReuse || hasDirectToolHistory(params.Messages) || len(params.Tools) > 0
+}
+
+func hasDirectToolHistory(messages []windsurf.ChatMessage) bool {
+	for _, msg := range messages {
+		if len(msg.ToolCalls) > 0 || strings.TrimSpace(msg.ToolCallID) != "" || strings.EqualFold(strings.TrimSpace(msg.Role), "tool") {
+			return true
+		}
+	}
+	return false
 }
 
 func directRequestShape(params directChatParams) string {

@@ -24,6 +24,7 @@ type Entry struct {
 	LSPort       int       `json:"ls_port"`
 	LSGeneration string    `json:"ls_generation"`
 	CascadeID    string    `json:"cascade_id"`
+	SessionID    string    `json:"session_id,omitempty"`
 	ModelID      string    `json:"model_id"`
 	CallerKey    string    `json:"caller_key"`
 	CreatedAt    time.Time `json:"created_at"`

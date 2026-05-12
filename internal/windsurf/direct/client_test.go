@@ -175,13 +175,22 @@ func TestBuildAPIGetChatMessageRequestWithNativePrompts(t *testing.T) {
 	}
 	gotSources := make([]uint64, 0, len(prompts))
 	gotTexts := make([]string, 0, len(prompts))
+	var assistantFields []p.Field
+	var toolFields []p.Field
 	for _, prompt := range prompts {
 		nested, err := p.ParseFields(prompt.Bytes())
 		if err != nil {
 			t.Fatalf("parse prompt: %v", err)
 		}
-		gotSources = append(gotSources, p.GetField(nested, 2, p.WireVarint).Uint())
+		source := p.GetField(nested, 2, p.WireVarint).Uint()
+		gotSources = append(gotSources, source)
 		gotTexts = append(gotTexts, p.GetField(nested, 3, p.WireLenDelim).String())
+		switch source {
+		case 3:
+			assistantFields = nested
+		case 4:
+			toolFields = nested
+		}
 	}
 	wantSources := []uint64{2, 1, 3, 4}
 	for i := range wantSources {
@@ -189,11 +198,127 @@ func TestBuildAPIGetChatMessageRequestWithNativePrompts(t *testing.T) {
 			t.Fatalf("sources=%v want=%v texts=%q", gotSources, wantSources, gotTexts)
 		}
 	}
-	if !strings.Contains(gotTexts[2], "<tool_calls>") || !strings.Contains(gotTexts[3], "<tool_result id=\"toolu_1\">") {
-		t.Fatalf("texts=%q", gotTexts)
+	for _, text := range gotTexts {
+		if strings.Contains(text, "<tool_calls>") || strings.Contains(text, "<tool_result") {
+			t.Fatalf("native prompt text leaked XML tool history: %q", gotTexts)
+		}
 	}
-	if topPrompt := p.GetField(fields, 2, p.WireLenDelim).String(); topPrompt != "flattened fallback" {
+	toolCall := requireField(t, assistantFields, 6, p.WireLenDelim)
+	toolCallFields, err := p.ParseFields(toolCall.Bytes())
+	if err != nil {
+		t.Fatalf("parse native tool call: %v", err)
+	}
+	if got := p.GetField(toolCallFields, 1, p.WireLenDelim).String(); got != "toolu_1" {
+		t.Fatalf("tool_call id=%q", got)
+	}
+	if got := p.GetField(toolCallFields, 2, p.WireLenDelim).String(); got != "echo_text" {
+		t.Fatalf("tool_call name=%q", got)
+	}
+	if got := p.GetField(toolCallFields, 3, p.WireLenDelim).String(); got != `{"text":"hi"}` {
+		t.Fatalf("tool_call args=%q", got)
+	}
+	if got := p.GetField(toolFields, 7, p.WireLenDelim).String(); got != "toolu_1" {
+		t.Fatalf("tool_call_id=%q", got)
+	}
+	if topPrompt := p.GetField(fields, 2, p.WireLenDelim).String(); topPrompt != "Continue as the assistant using the latest tool result. Do not repeat completed tool calls unless a new tool call is required." {
 		t.Fatalf("top prompt=%q", topPrompt)
+	}
+}
+
+func TestBuildAPIGetChatMessageRequestWithConversationFields(t *testing.T) {
+	model := models.GetModelByID("claude-sonnet-4.6")
+	if model == nil {
+		t.Fatal("missing test model")
+	}
+	trajectoryRef := p.Concat(
+		p.WriteStringField(1, "cascade-1"),
+		p.WriteVarintField(2, 1),
+		p.WriteVarintField(3, 2),
+	)
+	req := buildAPIGetChatMessageRequestWithOptions(apiGetChatMessageRequestOptions{
+		APIKey:              "devin-token",
+		Model:               model,
+		Prompt:              "continue",
+		RequestType:         5,
+		SessionID:           "session-1",
+		CascadeID:           "cascade-1",
+		PromptID:            "prompt-1",
+		TrajectoryReference: trajectoryRef,
+	})
+	fields, err := p.ParseFields(req)
+	if err != nil {
+		t.Fatalf("parse request: %v", err)
+	}
+	metaFields, err := p.ParseFields(requireField(t, fields, 1, p.WireLenDelim).Bytes())
+	if err != nil {
+		t.Fatalf("parse metadata: %v", err)
+	}
+	if got := p.GetField(metaFields, 10, p.WireLenDelim).String(); got != "session-1" {
+		t.Fatalf("metadata session_id=%q", got)
+	}
+	if got := p.GetField(fields, 15, p.WireLenDelim).Bytes(); string(got) != string(trajectoryRef) {
+		t.Fatalf("trajectory_reference=%x want=%x", got, trajectoryRef)
+	}
+	if got := p.GetField(fields, 16, p.WireLenDelim).String(); got != "cascade-1" {
+		t.Fatalf("cascade_id=%q", got)
+	}
+	if got := p.GetField(fields, 17, p.WireLenDelim).String(); got != "prompt-1" {
+		t.Fatalf("prompt_id=%q", got)
+	}
+}
+
+func TestBuildAPIGetChatMessageRequestForcesNativePromptsWithToolHistory(t *testing.T) {
+	model := models.GetModelByID("claude-opus-4-7-high")
+	if model == nil {
+		t.Fatal("missing test model")
+	}
+	messages := []windsurf.ChatMessage{
+		{Role: "user", Content: "read file"},
+		{Role: "assistant", ToolCalls: []windsurf.ToolCall{{ID: "call_1", Name: "read_file", ArgumentsJSON: `{"path":"README.md"}`}}},
+		{Role: "tool", ToolCallID: "call_1", Content: "file body"},
+		{Role: "user", Content: "continue"},
+	}
+	body := buildAPIGetChatMessageRequestWithOptions(apiGetChatMessageRequestOptions{
+		APIKey:        "devin-token",
+		Model:         model,
+		Prompt:        "flattened prompt with xml should not be the only history",
+		RequestType:   5,
+		Tools:         []ToolDefinition{{Name: "read_file", SchemaJSON: `{"type":"object"}`}},
+		NativePrompts: false,
+		Messages:      messages,
+		SessionID:     "session-1",
+		CascadeID:     "cascade-1",
+		PromptID:      "prompt-1",
+	})
+	fields, err := p.ParseFields(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts := p.GetAllFields(fields, 3)
+	if len(prompts) != 4 {
+		t.Fatalf("prompts=%d", len(prompts))
+	}
+	if topPrompt := p.GetField(fields, 2, p.WireLenDelim).String(); strings.Contains(topPrompt, "<tool_calls>") || strings.Contains(topPrompt, "<tool_result") {
+		t.Fatalf("top prompt leaked XML tool history: %q", topPrompt)
+	}
+	var sawToolCall, sawToolResultID bool
+	for _, prompt := range prompts {
+		nested, err := p.ParseFields(prompt.Bytes())
+		if err != nil {
+			t.Fatalf("parse prompt: %v", err)
+		}
+		if text := p.GetField(nested, 3, p.WireLenDelim).String(); strings.Contains(text, "<tool_calls>") || strings.Contains(text, "<tool_result") {
+			t.Fatalf("forced native prompt leaked XML text: %q", text)
+		}
+		if len(p.GetAllFields(nested, 6)) > 0 {
+			sawToolCall = true
+		}
+		if p.GetField(nested, 7, p.WireLenDelim).String() == "call_1" {
+			sawToolResultID = true
+		}
+	}
+	if !sawToolCall || !sawToolResultID {
+		t.Fatalf("native tool history missing: sawToolCall=%v sawToolResultID=%v", sawToolCall, sawToolResultID)
 	}
 }
 
@@ -332,6 +457,72 @@ func TestNativeOpus47ForcedToolDoesNotFallbackToPlain(t *testing.T) {
 	}
 	if shouldFallbackNativeToolsToPlain(req, ToolModeNative, errInternal()) {
 		t.Fatal("forced tools must not fall back to plain text")
+	}
+}
+
+func TestNativeOpus47ToolHistoryDoesNotFallbackToEmulated(t *testing.T) {
+	req := ChatRequest{
+		APIKey: "devin-token",
+		Model:  models.GetModelByID("claude-opus-4-7-high"),
+		Messages: []windsurf.ChatMessage{
+			{Role: "user", Content: "read file"},
+			{Role: "assistant", ToolCalls: []windsurf.ToolCall{{ID: "call_1", Name: "read_file", ArgumentsJSON: `{"path":"README.md"}`}}},
+			{Role: "tool", ToolCallID: "call_1", Content: "file body"},
+			{Role: "user", Content: "continue"},
+		},
+		Tools: []ToolDefinition{{
+			Name:       "read_file",
+			SchemaJSON: `{"type":"object"}`,
+		}},
+	}
+	prompt := flattenMessages(req.Messages)
+	nativePrompt, tools, choice, disableParallel := upstreamToolPayload(req, prompt, ToolModeNative)
+	if nativePrompt != prompt || len(tools) != 1 || choice != nil || disableParallel {
+		t.Fatalf("native upstream prompt=%q tools=%+v choice=%+v disable=%v", nativePrompt, tools, choice, disableParallel)
+	}
+	body := buildAPIGetChatMessageRequestWithOptions(apiGetChatMessageRequestOptions{
+		APIKey:      req.APIKey,
+		Model:       req.Model,
+		Prompt:      nativePrompt,
+		RequestType: 5,
+		Tools:       tools,
+		Messages:    req.Messages,
+		SessionID:   "session-1",
+		CascadeID:   "cascade-1",
+		PromptID:    "prompt-1",
+	})
+	fields, err := p.ParseFields(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(p.GetAllFields(fields, 10)); got != 1 {
+		t.Fatalf("native tools=%d", got)
+	}
+	if got := p.GetField(fields, 16, p.WireLenDelim).String(); got != "cascade-1" {
+		t.Fatalf("cascade_id=%q", got)
+	}
+	if topPrompt := p.GetField(fields, 2, p.WireLenDelim).String(); strings.Contains(topPrompt, "<tool_calls>") || strings.Contains(topPrompt, "<tool_result") {
+		t.Fatalf("top prompt leaked XML tool history: %q", topPrompt)
+	}
+	prompts := p.GetAllFields(fields, 3)
+	if len(prompts) != 4 {
+		t.Fatalf("prompts=%d", len(prompts))
+	}
+	var sawToolCall, sawToolResultID bool
+	for _, prompt := range prompts {
+		nested, err := p.ParseFields(prompt.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p.GetAllFields(nested, 6)) > 0 {
+			sawToolCall = true
+		}
+		if p.GetField(nested, 7, p.WireLenDelim).String() == "call_1" {
+			sawToolResultID = true
+		}
+	}
+	if !sawToolCall || !sawToolResultID {
+		t.Fatalf("native tool history missing sawToolCall=%v sawToolResultID=%v", sawToolCall, sawToolResultID)
 	}
 }
 

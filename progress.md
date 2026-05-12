@@ -686,3 +686,22 @@
 - Wired virtual usage into `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` so one successful upstream request computes one response usage view; account scheduling and upstream health still use raw upstream usage.
 - Runtime Dashboard config can now toggle and tune virtual cache billing without restarting; applying config updates the in-memory virtual ledger manager.
 - Dashboard Settings now exposes the main virtual cache controls in Chinese.
+
+## 2026-05-12 Direct native trajectory root-cause exploration
+- Investigated the remaining Opus 4.7 native tool-history internal errors instead of adding more fallback.
+- Compared Go Direct request construction with Node's `cascade-native-bridge.js` and `windsurf.js`.
+- Found the important mismatch: Go Direct puts tool history into flattened text/chat_message_prompts, while Node native bridge represents prior tool executions as `CortexTrajectoryStep` additional steps.
+- Corrected the earlier field read: Direct `GetChatMessageRequest` field 1 is `metadata`, so `trajectory_steps` is not a confirmed Direct chat field.
+- Removed the Opus 4.7 native tool-history automatic emulated fallback direction and started testing stable Direct conversation identifiers instead.
+
+## 2026-05-12 Direct native tool-history root fix
+- Continued the Opus 4.7 Direct native tools root-cause pass after the stable session/cascade-id change.
+- Implemented native `ChatMessagePrompt` tool-history encoding in `internal/windsurf/direct/client.go`:
+  - assistant `windsurf.ToolCall` values are now encoded as `ChatMessagePrompt.tool_calls` field 6 with nested `ChatToolCall{id=1,name=2,arguments_json=3}`.
+  - tool result messages now encode `tool_call_id` field 7.
+  - requests with tool history force native `chat_message_prompts` even when `direct.native_chat_prompts` is disabled.
+  - the top-level Direct prompt no longer carries the XML flattened transcript for tool-history turns, avoiding duplicate/conflicting history.
+- Updated Direct protocol tests to assert field 6/7 are present and `<tool_calls>` / `<tool_result>` no longer leak into native prompt text or top-level prompt.
+- Verification passed: `go test ./internal/windsurf/direct -count=1`, `go test ./internal/handler ./internal/reuse ./internal/windsurf/direct -count=1`, and full `go test ./...`.
+- Ran one minimal real upstream smoke against a temporary server on port 3492: `go run ./cmd/load-smoke -url http://127.0.0.1:3492 -api-key sk-windsurf-default -model claude-opus-4-7-high -route messages -scenario tool-result -concurrency 1 -requests 1 -timeout 90s -account-ids 8,9,10,11`.
+- The request reached Windsurf Direct with `tool_mode=native shape_turns=3 tool_history=2`; it did not reproduce the previous immediate upstream `internal error`, but account 8 hit `Reached overall message rate limit`, so this is not a full success proof. A later smoke with cooled-down accounts should retry the same exact scenario.

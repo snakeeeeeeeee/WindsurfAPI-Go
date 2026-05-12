@@ -318,6 +318,9 @@ func TestExecuteDirectChatStoresAndHitsStickyReuseAccount(t *testing.T) {
 	if len(rp.Snapshot()) == 0 || rp.Stats().Stores == 0 {
 		t.Fatalf("reuse was not stored stats=%+v entries=%+v", rp.Stats(), rp.Snapshot())
 	}
+	if len(fake.calls) != 1 || fake.calls[0].CascadeID != "" || fake.calls[0].SessionID != "" {
+		t.Fatalf("plain chat should not force direct conversation ids: calls=%+v", fake.calls)
+	}
 
 	_ = am.UpdateAccount(int(id1), map[string]interface{}{"quota_daily_percent": 1, "quota_weekly_percent": 1})
 	_, status, err = executeDirectChat(req, fake, am, rp, params)
@@ -436,6 +439,11 @@ func TestExecuteDirectChatToolContinuationReusesFirstLegAccount(t *testing.T) {
 	if err != nil || status != http.StatusOK || len(result.ToolCalls) != 2 {
 		t.Fatalf("first result=%+v status=%d err=%v", result, status, err)
 	}
+	if len(fake.calls) != 1 || fake.calls[0].CascadeID == "" || fake.calls[0].SessionID == "" {
+		t.Fatalf("first tool leg should allocate direct conversation ids: calls=%+v", fake.calls)
+	}
+	firstCascadeID := fake.calls[0].CascadeID
+	firstSessionID := fake.calls[0].SessionID
 
 	_ = am.UpdateAccount(int(id1), map[string]interface{}{"quota_daily_percent": 1, "quota_weekly_percent": 1})
 	params.Messages = []windsurf.ChatMessage{
@@ -448,6 +456,9 @@ func TestExecuteDirectChatToolContinuationReusesFirstLegAccount(t *testing.T) {
 	result, status, err = executeDirectChat(req, fake, am, rp, params)
 	if err != nil || status != http.StatusOK || result.Text != "done" {
 		t.Fatalf("second result=%+v status=%d err=%v", result, status, err)
+	}
+	if len(fake.calls) != 2 || fake.calls[1].CascadeID != firstCascadeID || fake.calls[1].SessionID != firstSessionID {
+		t.Fatalf("tool continuation should reuse direct conversation ids: first=%+v second=%+v", fake.calls[0], fake.calls[1])
 	}
 	if rp.Stats().Hits != 1 {
 		t.Fatalf("expected tool continuation reuse hit stats=%+v", rp.Stats())

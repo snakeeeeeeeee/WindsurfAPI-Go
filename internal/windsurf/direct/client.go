@@ -195,6 +195,10 @@ type ChatRequest struct {
 	Model                    *models.Model
 	Messages                 []windsurf.ChatMessage
 	ReportedName             string
+	SessionID                string
+	CascadeID                string
+	PromptID                 string
+	TrajectoryReference      []byte
 	Thinking                 string
 	Tools                    []ToolDefinition
 	ToolChoice               *ToolChoice
@@ -531,11 +535,38 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*windsurf.ChatResul
 func (c *Client) chatHost(ctx context.Context, host string, req ChatRequest, prompt string) (*windsurf.ChatResult, error) {
 	toolMode := c.ToolModeForRequest(req.Model, req.Tools, req.ToolChoice, req.Messages)
 	upstreamPrompt, upstreamTools, upstreamChoice, upstreamDisableParallel := upstreamToolPayload(req, prompt, toolMode)
-	body := buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, upstreamPrompt, 5, upstreamTools, upstreamChoice, upstreamDisableParallel, c.nativePrompts, req.Messages)
+	body := buildAPIGetChatMessageRequestWithOptions(apiGetChatMessageRequestOptions{
+		APIKey:                   req.APIKey,
+		Model:                    req.Model,
+		Prompt:                   upstreamPrompt,
+		RequestType:              5,
+		Tools:                    upstreamTools,
+		ToolChoice:               upstreamChoice,
+		DisableParallelToolCalls: upstreamDisableParallel,
+		NativePrompts:            c.nativePrompts,
+		Messages:                 req.Messages,
+		SessionID:                req.SessionID,
+		CascadeID:                req.CascadeID,
+		PromptID:                 req.PromptID,
+		TrajectoryReference:      req.TrajectoryReference,
+		Thinking:                 req.Thinking,
+	})
 	frames, err := c.postProtoFramesWithProtocol(ctx, host, getChatMessagePath, body, true, req.ProxyURL)
 	if err != nil && shouldFallbackNativeToolsToPlain(req, toolMode, err) {
 		c.recordToolFallback(host, req.ProxyURL, req.Model.ID, "opus47_native_auto_tools_internal_error")
-		body = buildAPIGetChatMessageRequestWithMessages(req.APIKey, req.Model, prompt, 5, nil, nil, false, c.nativePrompts, req.Messages)
+		body = buildAPIGetChatMessageRequestWithOptions(apiGetChatMessageRequestOptions{
+			APIKey:              req.APIKey,
+			Model:               req.Model,
+			Prompt:              prompt,
+			RequestType:         5,
+			NativePrompts:       c.nativePrompts,
+			Messages:            req.Messages,
+			SessionID:           req.SessionID,
+			CascadeID:           req.CascadeID,
+			PromptID:            req.PromptID,
+			TrajectoryReference: req.TrajectoryReference,
+			Thinking:            req.Thinking,
+		})
 		frames, err = c.postProtoFramesWithProtocol(ctx, host, getChatMessagePath, body, true, req.ProxyURL)
 	}
 	if err != nil {
@@ -983,22 +1014,65 @@ func buildAPIGetChatMessageRequest(apiKey string, model *models.Model, prompt st
 }
 
 func buildAPIGetChatMessageRequestWithMessages(apiKey string, model *models.Model, prompt string, requestType uint64, tools []ToolDefinition, choice *ToolChoice, disableParallelToolCalls bool, nativePrompts bool, messages []windsurf.ChatMessage) []byte {
-	if requestType == 0 {
-		requestType = 5 // ChatMessageRequestType.CASCADE
+	return buildAPIGetChatMessageRequestWithOptions(apiGetChatMessageRequestOptions{
+		APIKey:                   apiKey,
+		Model:                    model,
+		Prompt:                   prompt,
+		RequestType:              requestType,
+		Tools:                    tools,
+		ToolChoice:               choice,
+		DisableParallelToolCalls: disableParallelToolCalls,
+		NativePrompts:            nativePrompts,
+		Messages:                 messages,
+	})
+}
+
+type apiGetChatMessageRequestOptions struct {
+	APIKey                   string
+	Model                    *models.Model
+	Prompt                   string
+	RequestType              uint64
+	Tools                    []ToolDefinition
+	ToolChoice               *ToolChoice
+	DisableParallelToolCalls bool
+	NativePrompts            bool
+	Messages                 []windsurf.ChatMessage
+	SessionID                string
+	CascadeID                string
+	PromptID                 string
+	TrajectoryReference      []byte
+	Thinking                 string
+}
+
+func buildAPIGetChatMessageRequestWithOptions(opt apiGetChatMessageRequestOptions) []byte {
+	model := opt.Model
+	if opt.RequestType == 0 {
+		opt.RequestType = 5 // ChatMessageRequestType.CASCADE
 	}
-	promptID := windsurf.NewUUID()
-	sessionID := windsurf.NewUUID()
-	promptMessages := []windsurf.ChatMessage{{Role: "user", Content: prompt}}
-	if nativePrompts {
-		promptMessages = promptableMessages(messages)
+	promptID := strings.TrimSpace(opt.PromptID)
+	if promptID == "" {
+		promptID = windsurf.NewUUID()
+	}
+	sessionID := strings.TrimSpace(opt.SessionID)
+	if sessionID == "" {
+		sessionID = windsurf.NewUUID()
+	}
+	toolHistory := hasToolHistory(opt.Messages)
+	fieldPrompt := opt.Prompt
+	if toolHistory {
+		fieldPrompt = nativeTopLevelPrompt(opt.Messages, opt.Thinking)
+	}
+	promptMessages := []windsurf.ChatMessage{{Role: "user", Content: fieldPrompt}}
+	if opt.NativePrompts || toolHistory {
+		promptMessages = promptableMessages(opt.Messages)
 		if len(promptMessages) == 0 {
-			promptMessages = []windsurf.ChatMessage{{Role: "user", Content: prompt}}
+			promptMessages = []windsurf.ChatMessage{{Role: "user", Content: fieldPrompt}}
 		}
 	}
 	parts := [][]byte{
-		p.WriteMessageField(1, windsurf.BuildMetadata(apiKey, sessionID)),
-		p.WriteStringField(2, prompt),
-		p.WriteVarintField(7, requestType),
+		p.WriteMessageField(1, windsurf.BuildMetadata(opt.APIKey, sessionID)),
+		p.WriteStringField(2, fieldPrompt),
+		p.WriteVarintField(7, opt.RequestType),
 		p.WriteStringField(14, model.CascadeName),
 		p.WriteStringField(17, promptID),
 		p.WriteStringField(21, model.ModelUID),
@@ -1006,14 +1080,20 @@ func buildAPIGetChatMessageRequestWithMessages(apiKey string, model *models.Mode
 	for _, msg := range promptMessages {
 		parts = append(parts, p.WriteMessageField(3, buildChatMessagePromptFromMessage(msg)))
 	}
-	for _, tool := range tools {
+	for _, tool := range opt.Tools {
 		parts = append(parts, p.WriteMessageField(10, buildChatToolDefinition(tool)))
 	}
-	if len(tools) > 0 && disableParallelToolCalls {
+	if len(opt.Tools) > 0 && opt.DisableParallelToolCalls {
 		parts = append(parts, p.WriteBoolField(11, true))
 	}
-	if choice != nil {
-		parts = append(parts, p.WriteMessageField(12, buildChatToolChoice(*choice)))
+	if opt.ToolChoice != nil {
+		parts = append(parts, p.WriteMessageField(12, buildChatToolChoice(*opt.ToolChoice)))
+	}
+	if len(opt.TrajectoryReference) > 0 {
+		parts = append(parts, p.WriteMessageField(15, opt.TrajectoryReference))
+	}
+	if cascadeID := strings.TrimSpace(opt.CascadeID); cascadeID != "" {
+		parts = append(parts, p.WriteStringField(16, cascadeID))
 	}
 	return p.Concat(parts...)
 }
@@ -1025,12 +1105,19 @@ func buildChatMessagePrompt(prompt string) []byte {
 func buildChatMessagePromptFromMessage(message windsurf.ChatMessage) []byte {
 	source := chatMessageSource(message.Role)
 	prompt := strings.TrimSpace(sanitize.Text(message.Content))
-	return p.Concat(
+	parts := [][]byte{
 		p.WriteStringField(1, windsurf.NewUUID()),
 		p.WriteVarintField(2, source),
 		p.WriteStringField(3, prompt),
 		p.WriteBoolField(5, true),
-	)
+	}
+	for _, call := range sanitizeToolCalls(message.ToolCalls) {
+		parts = append(parts, p.WriteMessageField(6, buildChatToolCall(call)))
+	}
+	if id := strings.TrimSpace(sanitize.Text(message.ToolCallID)); id != "" {
+		parts = append(parts, p.WriteStringField(7, id))
+	}
+	return p.Concat(parts...)
 }
 
 func promptableMessages(messages []windsurf.ChatMessage) []windsurf.ChatMessage {
@@ -1044,13 +1131,12 @@ func promptableMessages(messages []windsurf.ChatMessage) []windsurf.ChatMessage 
 			role = "user"
 		}
 		content := strings.TrimSpace(sanitize.Text(msg.Content))
-		if len(msg.ToolCalls) > 0 {
-			content = strings.TrimSpace(content + "\n" + formatToolCallsForPrompt(sanitizeToolCalls(msg.ToolCalls)))
-		}
-		if role == "tool" {
-			content = formatToolResultTurn(msg.ToolCallID, content)
-		}
-		out = append(out, windsurf.ChatMessage{Role: role, Content: content})
+		out = append(out, windsurf.ChatMessage{
+			Role:       role,
+			Content:    content,
+			ToolCallID: msg.ToolCallID,
+			ToolCalls:  sanitizeToolCalls(msg.ToolCalls),
+		})
 	}
 	return out
 }
@@ -1105,6 +1191,15 @@ func buildChatToolChoice(choice ToolChoice) []byte {
 		return p.WriteStringField(2, choice.ToolName)
 	}
 	return p.WriteStringField(1, choice.OptionName)
+}
+
+func buildChatToolCall(call windsurf.ToolCall) []byte {
+	call = sanitize.ToolCall(call)
+	return p.Concat(
+		p.WriteStringField(1, call.ID),
+		p.WriteStringField(2, call.Name),
+		p.WriteStringField(3, call.ArgumentsJSON),
+	)
 }
 
 func parseToolCalls(fields []p.Field, fieldNum int) []windsurf.ToolCall {
@@ -1633,6 +1728,37 @@ func sanitizeToolCalls(calls []windsurf.ToolCall) []windsurf.ToolCall {
 		out = append(out, sanitize.ToolCall(call))
 	}
 	return out
+}
+
+func nativeTopLevelPrompt(messages []windsurf.ChatMessage, thinking string) string {
+	base := "Continue as the assistant from the current conversation state."
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "" {
+			role = "user"
+		}
+		text := strings.TrimSpace(sanitize.Text(msg.Content))
+		switch role {
+		case "system":
+			continue
+		case "user":
+			if text != "" {
+				base = text
+			}
+		case "tool":
+			base = "Continue as the assistant using the latest tool result. Do not repeat completed tool calls unless a new tool call is required."
+		default:
+			if text != "" {
+				base = "Continue as the assistant from the current conversation state."
+			}
+		}
+		break
+	}
+	if t := strings.TrimSpace(sanitize.Text(thinking)); t != "" {
+		return strings.TrimSpace(t + "\n\n" + base)
+	}
+	return base
 }
 
 var (
