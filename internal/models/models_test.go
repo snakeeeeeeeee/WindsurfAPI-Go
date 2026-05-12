@@ -70,9 +70,9 @@ func TestResolveModelForRequestPublicNamesAndEffort(t *testing.T) {
 		{"opus47ThinkingMaxFallsToXHigh", "claude-opus-4-7-thinking", "max", "claude-opus-4-7-xhigh-thinking", "claude-opus-4-7-xhigh-thinking"},
 		{"opus46", "claude-opus-4-6", "", "claude-opus-4.6", "claude-opus-4-6"},
 		{"opus46Thinking", "claude-opus-4-6-thinking", "", "claude-opus-4.6-thinking", "claude-opus-4-6-thinking"},
-		{"opus46EffortThinking", "claude-opus-4-6", "high", "claude-opus-4.6-thinking", "claude-opus-4-6-thinking"},
+		{"opus46UnsupportedEffortIgnored", "claude-opus-4-6", "high", "claude-opus-4.6", "claude-opus-4-6"},
 		{"sonnet46", "claude-sonnet-4-6", "", "claude-sonnet-4.6", "claude-sonnet-4-6"},
-		{"sonnet46EffortThinking", "claude-sonnet-4-6", "medium", "claude-sonnet-4.6-thinking", "claude-sonnet-4-6-thinking"},
+		{"sonnet46UnsupportedEffortIgnored", "claude-sonnet-4-6", "xhigh", "claude-sonnet-4.6", "claude-sonnet-4-6"},
 		{"haiku45", "claude-haiku-4-5", "", "claude-4.5-haiku", "MODEL_PRIVATE_11"},
 		{"haiku45Dated", "claude-haiku-4-5-20251001", "", "claude-4.5-haiku", "MODEL_PRIVATE_11"},
 	}
@@ -87,6 +87,45 @@ func TestResolveModelForRequestPublicNamesAndEffort(t *testing.T) {
 				t.Fatalf("resolved ID=%q uid=%q, want ID=%q uid=%q", got.ID, got.ModelUID, tt.want, tt.uid)
 			}
 		})
+	}
+}
+
+func TestResolveModelForRequestDefaultEffortOption(t *testing.T) {
+	got := ResolveModelForRequestWithOptions("claude-opus-4-7", "", ResolverOptions{DefaultEffort: "high"})
+	if got == nil || got.ID != "claude-opus-4-7-high" {
+		t.Fatalf("default high resolved to %#v", got)
+	}
+	got = ResolveModelForRequestWithOptions("claude-opus-4.7", "", ResolverOptions{DefaultEffort: "low"})
+	if got == nil || got.ID != "claude-opus-4-7-low" {
+		t.Fatalf("default low resolved to %#v", got)
+	}
+	got = ResolveModelForRequestWithOptions("claude-opus-4.7-medium", "", ResolverOptions{DefaultEffort: "high"})
+	if got == nil || got.ID != "claude-opus-4-7-medium" {
+		t.Fatalf("explicit medium should not be overridden: %#v", got)
+	}
+	got = ResolveModelForRequestWithOptions("claude-opus-4-7", "xhigh", ResolverOptions{DefaultEffort: "high"})
+	if got == nil || got.ID != "claude-opus-4-7-xhigh" {
+		t.Fatalf("explicit effort should win: %#v", got)
+	}
+	got = ResolveModelForRequestWithOptions("claude-opus-4-7-thinking", "", ResolverOptions{DefaultEffort: "high"})
+	if got == nil || got.ID != "claude-opus-4-7-high-thinking" {
+		t.Fatalf("thinking default high resolved to %#v", got)
+	}
+	got = ResolveModelForRequestWithOptions("gpt-5.5", "", ResolverOptions{DefaultEffort: "xhigh"})
+	if got == nil || got.ID != "gpt-5.5-xhigh" {
+		t.Fatalf("generic default should route gpt level family: %#v", got)
+	}
+	got = ResolveModelForRequestWithOptions("gpt-5.5-low", "", ResolverOptions{DefaultEffort: "xhigh"})
+	if got == nil || got.ID != "gpt-5.5-low" {
+		t.Fatalf("explicit low should not be overridden: %#v", got)
+	}
+	got = ResolveModelForRequestWithOptions("claude-sonnet-4-6", "", ResolverOptions{DefaultEffort: "high"})
+	if got == nil || got.ID != "claude-sonnet-4.6" {
+		t.Fatalf("non-level model should not be overridden: %#v", got)
+	}
+	got = ResolveModelForRequestWithOptions("claude-opus-4-7", "", ResolverOptions{DefaultOpus47Effort: "high"})
+	if got == nil || got.ID != "claude-opus-4-7-high" {
+		t.Fatalf("deprecated opus default should still work: %#v", got)
 	}
 }
 

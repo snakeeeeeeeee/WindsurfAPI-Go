@@ -10,10 +10,10 @@ import (
 
 	"github.com/zhangyu/windsurfapi-go/internal/account"
 	"github.com/zhangyu/windsurfapi-go/internal/modelaccess"
-	"github.com/zhangyu/windsurfapi-go/internal/models"
 	proxypool "github.com/zhangyu/windsurfapi-go/internal/proxy"
 	"github.com/zhangyu/windsurfapi-go/internal/redact"
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
+	runtimeconfig "github.com/zhangyu/windsurfapi-go/internal/runtimeconfig"
 	"github.com/zhangyu/windsurfapi-go/internal/sanitize"
 	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
@@ -70,6 +70,7 @@ type responseToolMeta struct {
 func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...any) http.HandlerFunc {
 	var proxyPool *proxypool.Manager
 	var usageMgr *usagepkg.Manager
+	var rc *runtimeconfig.Manager
 	if len(pp) > 0 {
 		for _, item := range pp {
 			switch v := item.(type) {
@@ -77,6 +78,8 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 				proxyPool = v
 			case *usagepkg.Manager:
 				usageMgr = v
+			case *runtimeconfig.Manager:
+				rc = v
 			}
 		}
 	}
@@ -92,7 +95,7 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 			writeJSONError(w, http.StatusBadRequest, "invalid request: "+err.Error())
 			return
 		}
-		model := models.ResolveModelForRequest(req.Model, responsesReasoningEffort(req.Reasoning))
+		model := resolveRequestModel(req.Model, responsesReasoningEffort(req.Reasoning), nil, rc)
 		if model == nil {
 			writeJSONError(w, http.StatusBadRequest, "unknown model: "+req.Model)
 			return
@@ -139,6 +142,7 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 		params := directChatParams{
 			Model:              model,
 			DisplayModelID:     displayModelID,
+			OriginalModelID:    model.ID,
 			Messages:           msgs,
 			CallerKey:          callerKeyForBody(r, req),
 			Route:              "responses",
@@ -152,6 +156,7 @@ func ResponsesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Po
 			InputTokenEstimate: inputTokenEstimate,
 			VirtualUsage:       usageMgr,
 			UsageOut:           &responseUsage,
+			EnableFallback:     true,
 			StrictReuse: func() bool {
 				if req.StrictReuse != nil {
 					return *req.StrictReuse

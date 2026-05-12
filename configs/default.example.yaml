@@ -27,6 +27,12 @@ ls:
 chat:
   backend: "direct"
 
+models:
+  # 裸模型别名的默认 Windsurf level。仅对目录中存在 low/medium/high/xhigh/max
+  # 兄弟变体的模型生效，例如 claude-opus-4-7、gpt-5.5、gpt-5.4。
+  # 客户端显式传 reasoning_effort 或具体 -low/-medium/-high/-xhigh/-max 时优先使用客户端值。
+  default_effort: "high"  # low, medium, high, xhigh, max
+
 direct:
   hosts:
     - "server.codeium.com"
@@ -41,6 +47,9 @@ direct:
   # flattened prompt. Keep disabled until real upstream smoke validates the
   # field semantics for multi-turn/tool history.
   native_chat_prompts: false
+  # Direct requests automatically retry lower same-series model levels on
+  # rate_limit before the first stream chunk. After a stream has started, it
+  # never switches model mid-response.
 
 health:
   enabled: true

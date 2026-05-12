@@ -54,6 +54,26 @@ func (f *sequenceDirectChatClient) Chat(_ context.Context, req direct.ChatReques
 	return res, nil
 }
 
+type modelRateLimitDirectChatClient struct {
+	calls []direct.ChatRequest
+}
+
+func (f *modelRateLimitDirectChatClient) Chat(_ context.Context, req direct.ChatRequest) (*windsurf.ChatResult, error) {
+	f.calls = append(f.calls, req)
+	if req.Model != nil && req.Model.ID == "claude-opus-4-7-high" {
+		return nil, errors.New("rate limit on model variant")
+	}
+	if req.OnFirstDelta != nil {
+		req.OnFirstDelta()
+	}
+	if req.OnDelta != nil {
+		if err := req.OnDelta("fallback ok"); err != nil {
+			return nil, err
+		}
+	}
+	return &windsurf.ChatResult{Text: "fallback ok", FinishReason: "stop"}, nil
+}
+
 type streamFailDirectChatClient struct {
 	calls    []direct.ChatRequest
 	failOnce bool
@@ -522,6 +542,68 @@ func TestExecuteDirectChatStreamRetriesBeforeFirstDelta(t *testing.T) {
 		if row.Inflight != 0 {
 			t.Fatalf("inflight leaked row=%+v", row)
 		}
+	}
+}
+
+func TestExecuteDirectChatFallsBackModelBeforeStreamFirstDelta(t *testing.T) {
+	am := testChatAccountManager(t)
+	_, _ = am.AddAccount("first@example.com", "tok-a", "u1", "", "")
+	_, _ = am.AddAccount("second@example.com", "tok-b", "u2", "", "")
+	fake := &modelRateLimitDirectChatClient{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	var deltas []string
+	params := directChatParams{
+		Model:           models.GetModelByID("claude-opus-4-7-high"),
+		OriginalModelID: "claude-opus-4-7-high",
+		DisplayModelID:  "claude-opus-4-7",
+		Messages:        []windsurf.ChatMessage{{Role: "user", Content: "hi"}},
+		CallerKey:       "caller-stream-fallback",
+		Route:           "chat_completions",
+		Stream:          true,
+		EnableFallback:  true,
+		OnTextDelta: func(delta string) error {
+			deltas = append(deltas, delta)
+			return nil
+		},
+		OnStreamFinish: func(_ *windsurf.ChatResult) error {
+			deltas = append(deltas, "[finish]")
+			return nil
+		},
+	}
+	result, status, err := executeDirectChat(req, fake, am, reusepool.NewPool(), params)
+	if err != nil || status != http.StatusOK || result.Text != "fallback ok" {
+		t.Fatalf("result=%+v status=%d err=%v", result, status, err)
+	}
+	if len(fake.calls) != 3 || fake.calls[0].Model.ID != "claude-opus-4-7-high" || fake.calls[1].Model.ID != "claude-opus-4-7-high" || fake.calls[2].Model.ID != "claude-opus-4-7-medium" {
+		t.Fatalf("calls=%+v", fake.calls)
+	}
+	if strings.Join(deltas, "|") != "fallback ok|[finish]" {
+		t.Fatalf("deltas=%v", deltas)
+	}
+}
+
+func TestExecuteDirectChatOverallRateLimitSetsGlobalCooldown(t *testing.T) {
+	am := testChatAccountManager(t)
+	id, _ := am.AddAccount("first@example.com", "tok-a", "u1", "", "")
+	fake := &sequenceDirectChatClient{errors: []error{errors.New("Reached overall message rate limit. Please try again later.")}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	params := directChatParams{
+		Model:          models.GetModelByID("claude-opus-4-7-low"),
+		Messages:       []windsurf.ChatMessage{{Role: "user", Content: "hi"}},
+		CallerKey:      "caller-global-cooldown",
+		Route:          "chat_completions",
+		TestAccountIDs: []int{int(id)},
+	}
+	_, status, err := executeDirectChat(req, fake, am, nil, params)
+	if err == nil || status != http.StatusTooManyRequests {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	acc, err := am.GetAccount(int(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acc.RateLimitedUntil == nil || acc.RateLimitedUntil.Before(time.Now()) {
+		t.Fatalf("global cooldown not persisted: %+v", acc)
 	}
 }
 

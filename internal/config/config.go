@@ -90,6 +90,11 @@ type ChatConfig struct {
 	Backend string `yaml:"backend"`
 }
 
+type ModelsConfig struct {
+	DefaultEffort       string `yaml:"default_effort"`
+	DefaultOpus47Effort string `yaml:"default_opus_4_7_effort"` // deprecated: use default_effort
+}
+
 type DirectConfig struct {
 	Hosts             []string `yaml:"hosts"`
 	TimeoutSeconds    int      `yaml:"timeout_seconds"`
@@ -145,6 +150,7 @@ type Config struct {
 	LS        LSConfig        `yaml:"ls"`
 	Windsurf  WindsurfConfig  `yaml:"windsurf"`
 	Chat      ChatConfig      `yaml:"chat"`
+	Models    ModelsConfig    `yaml:"models"`
 	Direct    DirectConfig    `yaml:"direct"`
 	Health    HealthConfig    `yaml:"health"`
 	Scheduler SchedulerConfig `yaml:"scheduler"`
@@ -297,6 +303,8 @@ func applyRuntimeDefaults(cfg *Config) {
 	if cfg.Server.MaxRequestBodyBytes <= 0 {
 		cfg.Server.MaxRequestBodyBytes = 25 * 1024 * 1024
 	}
+	cfg.Models.DefaultEffort = normalizeDefaultEffort(firstNonEmpty(cfg.Models.DefaultEffort, cfg.Models.DefaultOpus47Effort))
+	cfg.Models.DefaultOpus47Effort = cfg.Models.DefaultEffort
 	if cfg.Direct.TimeoutSeconds <= 0 {
 		cfg.Direct.TimeoutSeconds = 30
 	}
@@ -403,6 +411,15 @@ func normalizeDirectToolMode(mode string) string {
 	}
 }
 
+func normalizeDefaultEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(effort))
+	default:
+		return "high"
+	}
+}
+
 func applyEnvOverrides(cfg *Config) {
 	if v := getenv("WINDSURFAPI_PORT", "PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -450,6 +467,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := getenv("WINDSURFAPI_DIRECT_TOOL_MODE", "DIRECT_TOOL_MODE"); v != "" {
 		cfg.Direct.ToolMode = v
+	}
+	if v := getenv("WINDSURFAPI_DEFAULT_MODEL_EFFORT", "WINDSURFAPI_DEFAULT_EFFORT", "MODEL_DEFAULT_EFFORT"); v != "" {
+		cfg.Models.DefaultEffort = v
+		cfg.Models.DefaultOpus47Effort = ""
+	} else if v := getenv("WINDSURFAPI_DEFAULT_OPUS_4_7_EFFORT", "OPUS_4_7_DEFAULT_EFFORT"); v != "" {
+		cfg.Models.DefaultOpus47Effort = v
 	}
 	if v := getenv("WINDSURFAPI_HEALTH_ENABLED", "HEALTH_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
@@ -646,6 +669,15 @@ func applyEnvOverrides(cfg *Config) {
 func getenv(names ...string) string {
 	for _, name := range names {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if v := strings.TrimSpace(value); v != "" {
 			return v
 		}
 	}

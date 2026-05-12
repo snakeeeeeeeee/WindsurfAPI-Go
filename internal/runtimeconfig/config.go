@@ -18,6 +18,7 @@ type Snapshot struct {
 	SQLite    SQLiteView    `json:"sqlite"`
 	Redis     RedisView     `json:"redis"`
 	Chat      ChatView      `json:"chat"`
+	Models    ModelsView    `json:"models"`
 	Direct    DirectView    `json:"direct"`
 	Health    HealthView    `json:"health"`
 	Scheduler SchedulerView `json:"scheduler"`
@@ -46,6 +47,11 @@ type RedisView struct {
 
 type ChatView struct {
 	Backend string `json:"backend"`
+}
+
+type ModelsView struct {
+	DefaultEffort       string `json:"default_effort"`
+	DefaultOpus47Effort string `json:"default_opus_4_7_effort,omitempty"` // deprecated: use default_effort
 }
 
 type DirectView struct {
@@ -143,6 +149,7 @@ type SecurityView struct {
 
 type Patch struct {
 	Server    *ServerView    `json:"server,omitempty"`
+	Models    *ModelsView    `json:"models,omitempty"`
 	Direct    *DirectView    `json:"direct,omitempty"`
 	Health    *HealthView    `json:"health,omitempty"`
 	Scheduler *SchedulerView `json:"scheduler,omitempty"`
@@ -189,6 +196,19 @@ func (m *Manager) DashboardPassword() string {
 	return strings.TrimSpace(m.cfg.Dashboard.Password)
 }
 
+func (m *Manager) DefaultModelEffort() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.cfg == nil {
+		return "high"
+	}
+	return normalizeDefaultEffort(firstNonEmpty(m.cfg.Models.DefaultEffort, m.cfg.Models.DefaultOpus47Effort))
+}
+
+func (m *Manager) DefaultOpus47Effort() string {
+	return m.DefaultModelEffort()
+}
+
 func (m *Manager) CredentialsSnapshot() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -232,6 +252,10 @@ func (m *Manager) EnvSnapshot() map[string]any {
 			"hosts":               append([]string(nil), m.cfg.Direct.Hosts...),
 			"timeout_seconds":     m.cfg.Direct.TimeoutSeconds,
 			"native_chat_prompts": m.cfg.Direct.NativeChatPrompts,
+		},
+		"models": map[string]any{
+			"default_effort":          normalizeDefaultEffort(firstNonEmpty(m.cfg.Models.DefaultEffort, m.cfg.Models.DefaultOpus47Effort)),
+			"default_opus_4_7_effort": normalizeDefaultEffort(firstNonEmpty(m.cfg.Models.DefaultEffort, m.cfg.Models.DefaultOpus47Effort)),
 		},
 		"health": map[string]any{
 			"enabled":             m.cfg.Health.Enabled,
@@ -311,11 +335,18 @@ func (m *Manager) Snapshot() Snapshot {
 func (m *Manager) Patch(p Patch) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.cfg == nil {
+		m.cfg = &config.Config{}
+	}
 	if p.Server != nil {
 		if p.Server.MaxRequestBodyBytes <= 0 {
 			return Snapshot{}, fmt.Errorf("server.max_request_body_bytes must be positive")
 		}
 		m.cfg.Server.MaxRequestBodyBytes = p.Server.MaxRequestBodyBytes
+	}
+	if p.Models != nil {
+		m.cfg.Models.DefaultEffort = normalizeDefaultEffort(firstNonEmpty(p.Models.DefaultEffort, p.Models.DefaultOpus47Effort))
+		m.cfg.Models.DefaultOpus47Effort = m.cfg.Models.DefaultEffort
 	}
 	if p.Direct != nil {
 		if p.Direct.TimeoutSeconds <= 0 {
@@ -477,6 +508,10 @@ func snapshot(cfg *config.Config) Snapshot {
 		SQLite: SQLiteView{Path: cfg.SQLite.Path},
 		Redis:  RedisView{Addr: cfg.Redis.Addr, DB: cfg.Redis.DB, PasswordSet: strings.TrimSpace(cfg.Redis.Password) != ""},
 		Chat:   ChatView{Backend: cfg.Chat.Backend},
+		Models: ModelsView{
+			DefaultEffort:       normalizeDefaultEffort(firstNonEmpty(cfg.Models.DefaultEffort, cfg.Models.DefaultOpus47Effort)),
+			DefaultOpus47Effort: normalizeDefaultEffort(firstNonEmpty(cfg.Models.DefaultEffort, cfg.Models.DefaultOpus47Effort)),
+		},
 		Direct: DirectView{
 			Hosts:             append([]string(nil), cfg.Direct.Hosts...),
 			TimeoutSeconds:    cfg.Direct.TimeoutSeconds,
@@ -621,4 +656,22 @@ func cleanStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeDefaultEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(effort))
+	default:
+		return "high"
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if v := strings.TrimSpace(value); v != "" {
+			return v
+		}
+	}
+	return ""
 }

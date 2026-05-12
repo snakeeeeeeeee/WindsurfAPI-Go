@@ -39,6 +39,7 @@ func TestPatchUpdatesMutableRuntimeConfig(t *testing.T) {
 		Server:    config.ServerConfig{MaxRequestBodyBytes: 100, APIKeys: []string{"sk-old"}},
 		Redis:     config.RedisConfig{Password: "redis-old"},
 		Dashboard: config.DashboardConfig{Password: "dash-old"},
+		Models:    config.ModelsConfig{DefaultEffort: "medium"},
 		Direct:    config.DirectConfig{Hosts: []string{"old"}, TimeoutSeconds: 30},
 		Health:    config.HealthConfig{Enabled: true, IntervalSeconds: 300, TimeoutSeconds: 20, Model: "claude-sonnet-4.6"},
 		Scheduler: config.SchedulerConfig{MaxInflightPerAccount: 4, ReservationTTLSeconds: 180},
@@ -46,6 +47,7 @@ func TestPatchUpdatesMutableRuntimeConfig(t *testing.T) {
 	mgr := NewManager(cfg)
 	snap, err := mgr.Patch(Patch{
 		Server:    &ServerView{MaxRequestBodyBytes: 200},
+		Models:    &ModelsView{DefaultEffort: "xhigh"},
 		Direct:    &DirectView{Hosts: []string{" one ", "two"}, TimeoutSeconds: 45, NativeChatPrompts: true},
 		Health:    &HealthView{Enabled: false, IntervalSeconds: 60, TimeoutSeconds: 10, Model: "claude-opus-4.6"},
 		Scheduler: &SchedulerView{RedisEnabled: true, RedisFailClosed: true, MaxInflightPerAccount: 8, ReservationTTLSeconds: 90},
@@ -59,6 +61,9 @@ func TestPatchUpdatesMutableRuntimeConfig(t *testing.T) {
 	}
 	if snap.Server.MaxRequestBodyBytes != 200 || snap.Direct.TimeoutSeconds != 45 || snap.Direct.Hosts[0] != "one" || !snap.Scheduler.RedisEnabled || !snap.Scheduler.RedisFailClosed {
 		t.Fatalf("snapshot=%+v", snap)
+	}
+	if snap.Models.DefaultEffort != "xhigh" || mgr.DefaultModelEffort() != "xhigh" || cfg.Models.DefaultEffort != "xhigh" {
+		t.Fatalf("models config not patched snap=%+v cfg=%+v", snap.Models, cfg.Models)
 	}
 	if !snap.Direct.NativeChatPrompts || !cfg.Direct.NativeChatPrompts {
 		t.Fatalf("native prompts not patched snap=%+v cfg=%+v", snap.Direct, cfg.Direct)

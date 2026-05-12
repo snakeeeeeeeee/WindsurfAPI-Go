@@ -73,6 +73,17 @@ func classifyError(err error) account.ErrorClass {
 	}
 }
 
+func isOverallRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "overall message rate limit") ||
+		strings.Contains(msg, "overall rate limit") ||
+		strings.Contains(msg, "account rate limit") ||
+		strings.Contains(msg, "global rate limit")
+}
+
 func retryableClass(class account.ErrorClass) bool {
 	switch class {
 	case account.ErrorRateLimit, account.ErrorModelNotAvailable, account.ErrorBanSignal, account.ErrorUpstreamTransient, account.ErrorTransport:

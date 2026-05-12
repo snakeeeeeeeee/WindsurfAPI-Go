@@ -15,6 +15,7 @@ import (
 	proxypool "github.com/zhangyu/windsurfapi-go/internal/proxy"
 	"github.com/zhangyu/windsurfapi-go/internal/redact"
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
+	runtimeconfig "github.com/zhangyu/windsurfapi-go/internal/runtimeconfig"
 	"github.com/zhangyu/windsurfapi-go/internal/sanitize"
 	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
 	"github.com/zhangyu/windsurfapi-go/internal/windsurf"
@@ -87,6 +88,7 @@ type anthropicStreamWriter struct {
 func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...any) http.HandlerFunc {
 	var proxyPool *proxypool.Manager
 	var usageMgr *usagepkg.Manager
+	var rc *runtimeconfig.Manager
 	if len(pp) > 0 {
 		for _, item := range pp {
 			switch v := item.(type) {
@@ -94,6 +96,8 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 				proxyPool = v
 			case *usagepkg.Manager:
 				usageMgr = v
+			case *runtimeconfig.Manager:
+				rc = v
 			}
 		}
 	}
@@ -112,23 +116,6 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 			writeAnthropicError(w, http.StatusBadRequest, "messages required")
 			return
 		}
-		cachePolicy := anthropicCachePolicyFromRequest(req)
-		model := models.ResolveModelForRequest(req.Model, anthropicReasoningEffort(req))
-		if model == nil {
-			writeAnthropicError(w, http.StatusBadRequest, "unknown model: "+req.Model)
-			return
-		}
-		if !model.DirectSupported {
-			writeAnthropicError(w, http.StatusBadRequest, "model unsupported on direct backend: "+modelUnsupportedReason(model))
-			return
-		}
-		if ok, reason := modelAllowed(access, model.ID); !ok {
-			writeAnthropicTypedError(w, http.StatusForbidden, "model blocked: "+reason, "model_blocked")
-			return
-		}
-		displayModelID := responseModelID(req.Model, model)
-		setAnthropicHeaders(w, displayModelID)
-
 		msgs, err := anthropicToWindsurfMessages(req)
 		if err != nil {
 			writeAnthropicError(w, http.StatusBadRequest, err.Error())
@@ -159,13 +146,34 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 			writeAnthropicError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		explicitThinking := thinking.Enabled
 		thinking = mergeAnthropicOutputConfigEffort(thinking, req.OutputConfig)
+		cachePolicy := anthropicCachePolicyFromRequest(req)
+		model := resolveRequestModel(req.Model, anthropicReasoningEffort(req), nil, rc)
+		if explicitThinking {
+			model = resolveExplicitThinkingModel(model)
+		}
+		if model == nil {
+			writeAnthropicError(w, http.StatusBadRequest, "unknown model: "+req.Model)
+			return
+		}
+		if !model.DirectSupported {
+			writeAnthropicError(w, http.StatusBadRequest, "model unsupported on direct backend: "+modelUnsupportedReason(model))
+			return
+		}
+		if ok, reason := modelAllowed(access, model.ID); !ok {
+			writeAnthropicTypedError(w, http.StatusForbidden, "model blocked: "+reason, "model_blocked")
+			return
+		}
+		displayModelID := responseModelID(req.Model, model)
+		setAnthropicHeaders(w, displayModelID)
 
 		var stream *anthropicStreamWriter
 		var responseUsage usagepkg.Usage
 		params := directChatParams{
 			Model:              model,
 			DisplayModelID:     displayModelID,
+			OriginalModelID:    model.ID,
 			Messages:           msgs,
 			CallerKey:          callerKeyForBody(r, req),
 			Route:              "messages",
@@ -180,6 +188,7 @@ func MessagesHandler(am *account.Manager, dc directChatClient, rp *reusepool.Poo
 			InputTokenEstimate: inputTokenEstimate,
 			VirtualUsage:       usageMgr,
 			UsageOut:           &responseUsage,
+			EnableFallback:     true,
 			StrictReuse: func() bool {
 				if req.StrictReuse != nil {
 					return *req.StrictReuse
@@ -739,6 +748,16 @@ func anthropicReasoningEffort(req MessagesRequest) string {
 		}
 	}
 	return ""
+}
+
+func resolveExplicitThinkingModel(model *models.Model) *models.Model {
+	if model == nil || strings.Contains(model.ID, "thinking") {
+		return model
+	}
+	if sibling := models.GetModelByID(model.ID + "-thinking"); sibling != nil {
+		return sibling
+	}
+	return model
 }
 
 func anthropicIntValue(v any, fallback int) int {

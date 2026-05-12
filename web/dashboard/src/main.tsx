@@ -352,6 +352,7 @@ type RuntimeConfigSnapshot = {
   sqlite?: { path?: string };
   redis?: { addr?: string; db?: number; password_set?: boolean };
   chat?: { backend?: string };
+  models?: { default_effort?: string; default_opus_4_7_effort?: string };
   direct?: { hosts?: string[]; timeout_seconds?: number };
   health?: {
     enabled?: boolean;
@@ -2909,6 +2910,7 @@ function SettingsPanel({
   }, [config]);
   if (!config) return <div className="empty">加载运行配置...</div>;
   const direct = draft.direct ?? {};
+  const models = draft.models ?? {};
   const server = draft.server ?? {};
   const health = draft.health ?? {};
   const scheduler = draft.scheduler ?? {};
@@ -2942,6 +2944,18 @@ function SettingsPanel({
         </Field>
         <Field label="健康检查模型">
           <Input value={health.model ?? ""} onChange={(event) => setDraft({ ...draft, health: { ...health, model: event.target.value } })} />
+        </Field>
+        <Field label="默认模型等级">
+          <Select
+            value={models.default_effort ?? models.default_opus_4_7_effort ?? "high"}
+            onChange={(event) => setDraft({ ...draft, models: { ...models, default_effort: event.target.value } })}
+          >
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+          </Select>
         </Field>
         <Field label="健康检查间隔">
           <Input
@@ -3711,6 +3725,9 @@ function runtimePatch(config: RuntimeConfigSnapshot): RuntimeConfigSnapshot {
       max_request_body_bytes: config.server?.max_request_body_bytes ?? 26214400
     },
     direct: config.direct,
+    models: {
+      default_effort: config.models?.default_effort || config.models?.default_opus_4_7_effort || "high"
+    },
     health: {
       enabled: config.health?.enabled ?? true,
       interval_seconds: config.health?.interval_seconds ?? 300,

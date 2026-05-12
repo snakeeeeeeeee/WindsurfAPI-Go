@@ -189,6 +189,11 @@ var modelAliases = map[string]string{
 	"claude-opus-4.7-max":        "claude-opus-4-7-max",
 }
 
+type ResolverOptions struct {
+	DefaultEffort       string
+	DefaultOpus47Effort string
+}
+
 var (
 	catalogOnce   sync.Once
 	catalogModels []Model
@@ -232,24 +237,55 @@ func ResolveModelForRequest(id, effort string) *Model {
 	return GetModelByID(id)
 }
 
+func ResolveModelForRequestWithOptions(id, effort string, opts ResolverOptions) *Model {
+	id = ResolveModelIDForRequestWithOptions(id, effort, opts)
+	if id == "" {
+		return nil
+	}
+	return GetModelByID(id)
+}
+
 func ResolveModelIDForRequest(id, effort string) string {
+	return ResolveModelIDForRequestWithOptions(id, effort, ResolverOptions{})
+}
+
+func ResolveModelIDForRequestWithOptions(id, effort string, opts ResolverOptions) string {
 	canonical := NormalizeModelID(id)
 	if canonical == "" {
 		return ""
 	}
 	effort = NormalizeReasoningEffort(effort)
 	if effort == "" {
+		effort = defaultEffortFor(id, canonical, firstNonEmpty(opts.DefaultEffort, opts.DefaultOpus47Effort))
+	}
+	if effort == "" {
 		return canonical
 	}
-	if routed := resolveOpus47EffortVariant(canonical, effort); routed != "" {
+	if routed := resolveEffortVariant(canonical, effort); routed != "" {
 		return routed
 	}
-	if IsReasoningEffortEnabled(effort) && !strings.Contains(canonical, "thinking") {
-		if sibling := GetModelByID(canonical + "-thinking"); sibling != nil {
-			return sibling.ID
+	return canonical
+}
+
+func defaultEffortFor(publicID, canonical, configured string) string {
+	configured = NormalizeReasoningEffort(configured)
+	if configured == "" {
+		return ""
+	}
+	if !hasExplicitEffort(publicID) && effortVariantBase(canonical) != "" {
+		return configured
+	}
+	return ""
+}
+
+func hasExplicitEffort(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		if strings.HasSuffix(key, "-"+effort) || strings.Contains(key, "-"+effort+"-") || strings.Contains(key, "."+effort+"-") {
+			return true
 		}
 	}
-	return canonical
+	return false
 }
 
 func NormalizeReasoningEffort(effort string) string {
@@ -300,32 +336,79 @@ func PickRateLimitFallback(modelID string) string {
 	return ""
 }
 
-func resolveOpus47EffortVariant(canonical, effort string) string {
-	if !strings.HasPrefix(canonical, "claude-opus-4-7-") {
+func resolveEffortVariant(canonical, effort string) string {
+	base := effortVariantBase(canonical)
+	if base == "" {
 		return ""
 	}
 	thinking := strings.HasSuffix(canonical, "-thinking")
-	base := strings.TrimSuffix(canonical, "-thinking")
-	found := false
-	for _, tier := range []string{"low", "medium", "high", "xhigh", "max"} {
-		if base == "claude-opus-4-7-"+tier {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return ""
-	}
 	targetEffort := effort
 	if thinking && targetEffort == "max" {
 		targetEffort = "xhigh"
 	}
-	target := "claude-opus-4-7-" + targetEffort
+	target := base + "-" + targetEffort
 	if thinking {
 		target += "-thinking"
 	}
 	if model := GetModelByID(target); model != nil {
 		return model.ID
+	}
+	return ""
+}
+
+func effortVariantBase(canonical string) string {
+	id := NormalizeModelID(canonical)
+	if id == "" {
+		return ""
+	}
+	baseID := strings.TrimSuffix(id, "-thinking")
+	if hasEffortSibling(baseID) {
+		return baseID
+	}
+	if base, ok := trimEffortSuffix(baseID); ok && hasEffortSibling(base) {
+		return base
+	}
+	model := GetModelByID(id)
+	if model == nil {
+		return ""
+	}
+	uidBase := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(model.ModelUID)), "-thinking")
+	if base, ok := trimEffortSuffix(uidBase); ok {
+		if modelByUID := GetModelByID(base + "-medium"); modelByUID != nil {
+			if baseID2, ok2 := trimEffortSuffix(strings.TrimSuffix(modelByUID.ID, "-thinking")); ok2 && hasEffortSibling(baseID2) {
+				return baseID2
+			}
+		}
+	}
+	return ""
+}
+
+func trimEffortSuffix(id string) (string, bool) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		suffix := "-" + effort
+		if strings.HasSuffix(id, suffix) {
+			return strings.TrimSuffix(id, suffix), true
+		}
+	}
+	return "", false
+}
+
+func hasEffortSibling(base string) bool {
+	count := 0
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		if GetModelByID(base+"-"+effort) != nil {
+			count++
+		}
+	}
+	return count > 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if v := strings.TrimSpace(value); v != "" {
+			return v
+		}
 	}
 	return ""
 }

@@ -388,6 +388,7 @@ func TestAuthAccountModelsHandler(t *testing.T) {
 func TestDashboardConfigAPI(t *testing.T) {
 	cfg := &config.Config{
 		Server:    config.ServerConfig{Port: 3456, APIKeys: []string{"sk-test"}, MaxRequestBodyBytes: 26214400},
+		Models:    config.ModelsConfig{DefaultEffort: "medium"},
 		Direct:    config.DirectConfig{Hosts: []string{"old"}, TimeoutSeconds: 30},
 		Health:    config.HealthConfig{Enabled: true, IntervalSeconds: 300, TimeoutSeconds: 20, Model: "claude-sonnet-4.6"},
 		Scheduler: config.SchedulerConfig{MaxInflightPerAccount: 4, ReservationTTLSeconds: 180},
@@ -402,13 +403,13 @@ func TestDashboardConfigAPI(t *testing.T) {
 		t.Fatalf("api key leaked: %s", rec.Body.String())
 	}
 
-	patch := `{"server":{"max_request_body_bytes":123456},"direct":{"hosts":["server.one"],"timeout_seconds":45},"scheduler":{"redis_enabled":true,"max_inflight_per_account":8,"reservation_ttl_seconds":90}}`
+	patch := `{"server":{"max_request_body_bytes":123456},"models":{"default_effort":"high"},"direct":{"hosts":["server.one"],"timeout_seconds":45},"scheduler":{"redis_enabled":true,"max_inflight_per_account":8,"reservation_ttl_seconds":90}}`
 	patchRec := httptest.NewRecorder()
 	dashboardConfigAPI(patchRec, httptest.NewRequest(http.MethodPatch, "/dashboard/api/config", strings.NewReader(patch)), rc)
 	if patchRec.Code != http.StatusOK {
 		t.Fatalf("patch status=%d body=%s", patchRec.Code, patchRec.Body.String())
 	}
-	if cfg.Server.MaxRequestBodyBytes != 123456 || cfg.Direct.TimeoutSeconds != 45 || cfg.Direct.Hosts[0] != "server.one" || !cfg.Scheduler.RedisEnabled {
+	if cfg.Server.MaxRequestBodyBytes != 123456 || cfg.Models.DefaultEffort != "high" || cfg.Direct.TimeoutSeconds != 45 || cfg.Direct.Hosts[0] != "server.one" || !cfg.Scheduler.RedisEnabled {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 }

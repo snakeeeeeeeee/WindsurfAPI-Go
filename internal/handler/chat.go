@@ -19,6 +19,7 @@ import (
 	proxypool "github.com/zhangyu/windsurfapi-go/internal/proxy"
 	"github.com/zhangyu/windsurfapi-go/internal/redact"
 	reusepool "github.com/zhangyu/windsurfapi-go/internal/reuse"
+	runtimeconfig "github.com/zhangyu/windsurfapi-go/internal/runtimeconfig"
 	"github.com/zhangyu/windsurfapi-go/internal/sanitize"
 	"github.com/zhangyu/windsurfapi-go/internal/sse"
 	usagepkg "github.com/zhangyu/windsurfapi-go/internal/usage"
@@ -58,6 +59,7 @@ type directChatClient interface {
 type directChatParams struct {
 	Model              *models.Model
 	DisplayModelID     string
+	OriginalModelID    string
 	Messages           []windsurf.ChatMessage
 	CallerKey          string
 	Route              string
@@ -74,6 +76,7 @@ type directChatParams struct {
 	InputTokenEstimate uint64
 	VirtualUsage       *usagepkg.Manager
 	UsageOut           *usagepkg.Usage
+	EnableFallback     bool
 	OnStreamStart      func() error
 	OnTextDelta        func(string) error
 	OnThinkingDelta    func(string) error
@@ -138,9 +141,10 @@ func (m ChatMessage) text() string {
 
 // ChatCompletionsHandler serves OpenAI-compatible chat through direct Windsurf
 // cloud RPCs. The LS-backed client remains legacy-only.
-func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...any) http.HandlerFunc {
+func ChatCompletionsHandler(cfg *config.Config, am *account.Manager, dc directChatClient, rp *reusepool.Pool, access *modelaccess.Manager, pp ...any) http.HandlerFunc {
 	var proxyPool *proxypool.Manager
 	var usageMgr *usagepkg.Manager
+	var rc *runtimeconfig.Manager
 	if len(pp) > 0 {
 		for _, item := range pp {
 			switch v := item.(type) {
@@ -148,6 +152,8 @@ func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChat
 				proxyPool = v
 			case *usagepkg.Manager:
 				usageMgr = v
+			case *runtimeconfig.Manager:
+				rc = v
 			}
 		}
 	}
@@ -169,7 +175,7 @@ func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChat
 			return
 		}
 
-		model := models.ResolveModelForRequest(req.Model, openAIReasoningEffort(req))
+		model := resolveRequestModel(req.Model, openAIReasoningEffort(req), cfg, rc)
 		if model == nil {
 			writeJSONError(w, http.StatusBadRequest, "unknown model: "+req.Model)
 			return
@@ -230,6 +236,19 @@ func ChatCompletionsHandler(_ *config.Config, am *account.Manager, dc directChat
 		setOpenAIHeaders(w, displayModelID, time.Since(started))
 		writeUnaryResponse(w, displayModelID, result, inputTokenEstimate)
 	}
+}
+
+func resolveRequestModel(id, effort string, cfg *config.Config, rc *runtimeconfig.Manager) *models.Model {
+	defaultEffort := ""
+	if rc != nil {
+		defaultEffort = rc.DefaultModelEffort()
+	} else if cfg != nil {
+		defaultEffort = cfg.Models.DefaultEffort
+		if strings.TrimSpace(defaultEffort) == "" {
+			defaultEffort = cfg.Models.DefaultOpus47Effort
+		}
+	}
+	return models.ResolveModelForRequestWithOptions(id, effort, models.ResolverOptions{DefaultEffort: defaultEffort})
 }
 
 func testAccountIDsFromRequest(r *http.Request) []int {
@@ -478,6 +497,7 @@ func executeOpenAIChat(r *http.Request, dc directChatClient, am *account.Manager
 	params := directChatParams{
 		Model:              model,
 		DisplayModelID:     displayModelID,
+		OriginalModelID:    model.ID,
 		Messages:           msgs,
 		CallerKey:          callerKey,
 		Route:              "chat_completions",
@@ -493,6 +513,7 @@ func executeOpenAIChat(r *http.Request, dc directChatClient, am *account.Manager
 		InputTokenEstimate: inputTokenEstimate,
 		VirtualUsage:       usageMgr,
 		UsageOut:           &responseUsage,
+		EnableFallback:     true,
 	}
 	if stream {
 		params.OnStreamStart = func() error {
@@ -543,6 +564,45 @@ func executeOpenAIChat(r *http.Request, dc directChatClient, am *account.Manager
 }
 
 func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager, rp *reusepool.Pool, params directChatParams) (*windsurf.ChatResult, int, error) {
+	if params.Model == nil || !params.EnableFallback {
+		return executeDirectChatAttempt(r, dc, am, rp, params)
+	}
+	originalModelID := params.OriginalModelID
+	if strings.TrimSpace(originalModelID) == "" {
+		originalModelID = params.Model.ID
+	}
+	params.OriginalModelID = originalModelID
+	triedFallbacks := map[string]bool{params.Model.ID: true}
+	finalStatus := 0
+	var finalErr error
+	for {
+		result, status, err := executeDirectChatAttempt(r, dc, am, rp, params)
+		if err == nil || status != http.StatusTooManyRequests || classifyError(err) != account.ErrorRateLimit {
+			return result, status, err
+		}
+		finalStatus, finalErr = status, err
+		fallbackID := models.PickRateLimitFallback(params.Model.ID)
+		if fallbackID == "" || triedFallbacks[fallbackID] {
+			return result, status, err
+		}
+		fallbackModel := models.GetModelByID(fallbackID)
+		if fallbackModel == nil || !fallbackModel.DirectSupported {
+			return result, status, err
+		}
+		triedFallbacks[fallbackID] = true
+		reqID := requestID(r)
+		route := params.Route
+		if route == "" {
+			route = "chat"
+		}
+		log.Printf("req_id=%s route=%s event=direct_chat_model_fallback from=%s to=%s reason=rate_limit stream=%v", reqID, route, params.Model.ID, fallbackModel.ID, params.Stream)
+		params.Model = fallbackModel
+		params.OriginalModelID = originalModelID
+	}
+	return nil, finalStatus, finalErr
+}
+
+func executeDirectChatAttempt(r *http.Request, dc directChatClient, am *account.Manager, rp *reusepool.Pool, params directChatParams) (*windsurf.ChatResult, int, error) {
 	start := time.Now()
 	var tried []int
 	var lastErr error
@@ -567,22 +627,26 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 	shape := directRequestShape(params)
 	toolsDigest := directToolsDigest(params.Tools)
 	toolChoiceDigest := directToolChoiceDigest(params.ToolChoice)
+	reuseModelID := params.Model.ID
+	if strings.TrimSpace(params.OriginalModelID) != "" {
+		reuseModelID = strings.TrimSpace(params.OriginalModelID)
+	}
 	exactFingerprint := ""
 	checkoutFingerprint := ""
 	reuseMissReason := "disabled"
 	var reuseEntry *reusepool.Entry
 	if rp != nil {
-		exactFingerprint = reusepool.FingerprintWithOptions(params.Model.ID, params.CallerKey, route, toolsDigest, toolChoiceDigest, params.Messages)
-		checkoutFingerprint = reusepool.FingerprintBeforeWithOptions(params.Model.ID, params.CallerKey, route, toolsDigest, toolChoiceDigest, params.Messages)
+		exactFingerprint = reusepool.FingerprintWithOptions(reuseModelID, params.CallerKey, route, toolsDigest, toolChoiceDigest, params.Messages)
+		checkoutFingerprint = reusepool.FingerprintBeforeWithOptions(reuseModelID, params.CallerKey, route, toolsDigest, toolChoiceDigest, params.Messages)
 		if checkoutFingerprint == "" {
 			checkoutFingerprint = exactFingerprint
 		}
-		if entry, ok := rp.Checkout(checkoutFingerprint, params.CallerKey, params.Model.ID); ok {
+		if entry, ok := rp.Checkout(checkoutFingerprint, params.CallerKey, reuseModelID); ok {
 			reuseHit = true
 			reuseEntry = entry
 			reuseMissReason = ""
 		} else if exactFingerprint != "" && exactFingerprint != checkoutFingerprint {
-			if entry, ok := rp.Checkout(exactFingerprint, params.CallerKey, params.Model.ID); ok {
+			if entry, ok := rp.Checkout(exactFingerprint, params.CallerKey, reuseModelID); ok {
 				reuseHit = true
 				reuseEntry = entry
 				checkoutFingerprint = exactFingerprint
@@ -713,8 +777,8 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 			if rp != nil {
 				for _, fp := range []string{
 					exactFingerprint,
-					reusepool.FingerprintAfterWithOptions(params.Model.ID, params.CallerKey, route, toolsDigest, toolChoiceDigest, params.Messages, result),
-					reusepool.FingerprintAfterWithOptions(params.Model.ID, params.CallerKey, route, "", "", params.Messages, result),
+					reusepool.FingerprintAfterWithOptions(reuseModelID, params.CallerKey, route, toolsDigest, toolChoiceDigest, params.Messages, result),
+					reusepool.FingerprintAfterWithOptions(reuseModelID, params.CallerKey, route, "", "", params.Messages, result),
 					checkoutFingerprint,
 				} {
 					if fp != "" && !containsString(checkinFingerprints, fp) {
@@ -730,7 +794,7 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 						APIKeyHash: reusepool.APIKeyHash(res.Account.FirebaseToken),
 						CascadeID:  req.CascadeID,
 						SessionID:  req.SessionID,
-						ModelID:    params.Model.ID,
+						ModelID:    reuseModelID,
 						CallerKey:  params.CallerKey,
 					}
 				} else {
@@ -738,7 +802,7 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 					entry.APIKeyHash = reusepool.APIKeyHash(res.Account.FirebaseToken)
 					entry.CascadeID = req.CascadeID
 					entry.SessionID = req.SessionID
-					entry.ModelID = params.Model.ID
+					entry.ModelID = reuseModelID
 					entry.CallerKey = params.CallerKey
 				}
 				for _, fp := range checkinFingerprints {
@@ -793,7 +857,11 @@ func executeDirectChat(r *http.Request, dc directChatClient, am *account.Manager
 		am.RecordFailure(res, class, err)
 		switch class {
 		case account.ErrorRateLimit, account.ErrorModelNotAvailable:
-			_ = am.MarkCooldown(res.Account.ID, params.Model.ID, cooldownUntilForError(time.Now(), class, err), err.Error())
+			cooldownModel := params.Model.ID
+			if class == account.ErrorRateLimit && isOverallRateLimitError(err) {
+				cooldownModel = ""
+			}
+			_ = am.MarkCooldown(res.Account.ID, cooldownModel, cooldownUntilForError(time.Now(), class, err), err.Error())
 		case account.ErrorBanSignal:
 			_ = am.MarkBanned(res.Account.ID)
 		case account.ErrorPolicyBlocked:
@@ -1219,6 +1287,9 @@ func responseModelID(requested string, resolved *models.Model) string {
 	normalized := models.NormalizeModelID(raw)
 	for _, publicID := range models.PublicModelIDs {
 		if raw == publicID {
+			return publicID
+		}
+		if publicID == "claude-opus-4-7" && strings.HasPrefix(normalized, "claude-opus-4-7-") {
 			return publicID
 		}
 		if normalized != "" && normalized == models.ResolveModelIDForRequest(publicID, "") {

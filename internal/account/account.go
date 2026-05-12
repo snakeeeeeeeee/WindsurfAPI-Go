@@ -567,6 +567,11 @@ func (m *Manager) MarkCooldown(accountID int, modelName string, until time.Time,
 	if coord != nil {
 		coord.MarkCooldown(context.Background(), accountID, key, until)
 	}
+	if key == "*" {
+		if _, err := m.db.Exec("UPDATE accounts SET rate_limited_until = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", until, accountID); err != nil {
+			return err
+		}
+	}
 	return m.SetCooldown(accountID, key, until)
 }
 
