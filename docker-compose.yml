@@ -15,20 +15,14 @@ services:
       - windsurfapi-go-redis
     ports:
       - "3456:3456"
-    environment:
-      WINDSURFAPI_PORT: "3456"
-      WINDSURFAPI_API_KEYS: "sk-windsurf-default"
-      WINDSURFAPI_MAX_REQUEST_BODY_BYTES: "26214400"
-      WINDSURFAPI_DB_PATH: "/app/data/windsurf.db"
-      WINDSURFAPI_REDIS_ADDR: "windsurfapi-go-redis:6379"
-      WINDSURFAPI_DIRECT_TIMEOUT_SECONDS: "30"
-      WINDSURFAPI_HEALTH_MODEL: "claude-sonnet-4.6"
-      WINDSURFAPI_SCHEDULER_REDIS_ENABLED: "true"
-      WINDSURFAPI_SCHEDULER_REDIS_FAIL_CLOSED: "true"
-      WINDSURFAPI_DASHBOARD_PASSWORD: "change-me-dashboard-password"
     volumes:
       - ./data:/app/data
-      - ./configs/default.yaml:/app/configs/default.yaml:ro
+      - type: bind
+        source: ./configs/default.yaml
+        target: /app/configs/default.yaml
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3456/readyz"]

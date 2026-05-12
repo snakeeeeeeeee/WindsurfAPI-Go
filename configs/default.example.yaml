@@ -5,10 +5,10 @@ server:
     - "sk-windsurf-default"
 
 sqlite:
-  path: "./data/windsurf.db"
+  path: "/app/data/windsurf.db"
 
 redis:
-  addr: "localhost:6379"
+  addr: "windsurfapi-go-redis:6379"
   password: ""
   db: 0
 

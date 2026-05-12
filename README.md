@@ -29,7 +29,7 @@ Create a local config from the tracked example first:
 cp configs/default.example.yaml configs/default.yaml
 ```
 
-`configs/default.yaml` is intentionally ignored by git. Put server-specific API keys, Dashboard password and proxy credentials there, or use environment variables in Docker/systemd.
+`configs/default.yaml` is intentionally ignored by git. Put server-specific API keys, Dashboard password and proxy credentials there. Docker Compose mounts this file into the container as read-only config.
 
 Start Redis first. The default config enables Redis scheduler coordination and falls back to single-process mode if Redis is unavailable:
 
@@ -177,14 +177,19 @@ Start the service and Redis:
 docker compose up -d --build
 ```
 
-Compose does not mount `configs/default.yaml` by default, so a fresh clone can start without creating a conflicting tracked config file. For production, prefer environment variables for secrets. If you want to mount a config file instead, create `configs/default.yaml` from the example and add your own volume override:
+Compose mounts `configs/default.yaml` into the container. The mount uses `create_host_path: false`, so Docker fails fast if the local config file does not exist instead of creating a directory by accident.
 
 ```yaml
 services:
   windsurfapi-go:
     volumes:
       - ./data:/app/data
-      - ./configs/default.yaml:/app/configs/default.yaml:ro
+      - type: bind
+        source: ./configs/default.yaml
+        target: /app/configs/default.yaml
+        read_only: true
+        bind:
+          create_host_path: false
 ```
 
 View logs:
@@ -209,18 +214,17 @@ The Docker image build is reproducible: it runs Dashboard `npm ci && npm run bui
 - Redis on host `6380`, container `6379`
 - SQLite and Redis data under local `./data`
 
-Important environment variables:
+Important config values for Docker Compose:
 
-```bash
-WINDSURFAPI_API_KEYS=sk-windsurf-default
-WINDSURFAPI_DASHBOARD_PASSWORD=change-me-dashboard-password
-WINDSURFAPI_DB_PATH=/app/data/windsurf.db
-WINDSURFAPI_REDIS_ADDR=windsurfapi-go-redis:6379
-WINDSURFAPI_SCHEDULER_REDIS_ENABLED=true
-WINDSURFAPI_SCHEDULER_REDIS_FAIL_CLOSED=true
+```yaml
+sqlite:
+  path: "/app/data/windsurf.db"
+
+redis:
+  addr: "windsurfapi-go-redis:6379"
 ```
 
-For production, change `WINDSURFAPI_API_KEYS` and `WINDSURFAPI_DASHBOARD_PASSWORD`. Proxy provider settings can also be supplied through local `configs/default.yaml` or Dashboard Settings after login.
+For production, change `server.api_keys` and `dashboard.password` in local `configs/default.yaml`. Proxy provider settings can also be supplied through local `configs/default.yaml` or Dashboard Settings after login.
 
 ## Smoke Tests
 
